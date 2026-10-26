@@ -79,3 +79,10 @@ with left:
 
 with right:
     st.metric("먹이 수", f"{len(foods)}개")
+st.write("생물 슬라이더 값:", initial_population)
+st.write("실제 생물 데이터 수:", len(organisms))
+st.write("먹이 슬라이더 값:", initial_food)
+st.write("실제 먹이 데이터 수:", len(foods))
+
+st.write("생물 데이터 예시:", organisms[:2])
+st.write("먹이 데이터 예시:", foods[:2])

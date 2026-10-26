@@ -1,172 +1,300 @@
-import random
+from copy import deepcopy
+from html import escape
 
-import altair as alt
-import pandas as pd
 import streamlit as st
 
 
-# ──────────────────────────────
-# 페이지 설정
-# ──────────────────────────────
 st.set_page_config(
-    page_title="EvoLab | 가상 진화 실험실",
-    page_icon="🧬",
+    page_title="GENESIS | 지구의 설계자",
+    page_icon="🌍",
     layout="wide",
 )
 
-st.title("🧬 가상 진화 실험실")
-st.caption("환경과 생물의 조건을 직접 설정하는 시뮬레이터")
-st.info("현재 단계: 생물과 먹이의 초기 배치 — 아직 이동하거나 번식하지 않습니다.")
+
+# 실제 지구 역사의 정확한 수치가 아닌 게임용 설정입니다.
+PRESETS = {
+    "원시 지구": {
+        "icon": "🔥",
+        "description": "뜨거운 행성을 식혀 바다와 생명의 기반을 만드세요.",
+        "temperature": 1000,
+        "ocean": 0,
+        "life": 0,
+        "color": "#f97346",
+    },
+    "바다의 지구": {
+        "icon": "🌊",
+        "description": "푸른 바다에서 첫 생명이 탄생할 조건을 만드세요.",
+        "temperature": 35,
+        "ocean": 70,
+        "life": 0,
+        "color": "#359cfa",
+    },
+    "생명의 지구": {
+        "icon": "🌱",
+        "description": "작은 생태계를 키워 새로운 시대를 준비하세요.",
+        "temperature": 22,
+        "ocean": 65,
+        "life": 20,
+        "color": "#36cfaa",
+    },
+}
 
 
-# ──────────────────────────────
-# 사용자 설정
-# ──────────────────────────────
-with st.sidebar:
-    st.header("⚙️ 초기 설정")
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background:
+            radial-gradient(
+                ellipse at top,
+                #18314a 0%,
+                #0b1322 45%,
+                #050912 100%
+            );
+        color: #e8f0fa;
+    }
 
-    initial_population = st.slider(
-        "초기 생물 수",
-        min_value=10,
-        max_value=500,
-        value=80,
-        step=10,
+    .block-container {
+        max-width: 1200px;
+        padding-top: 3rem;
+        padding-bottom: 3rem;
+    }
+
+    h1, h2, h3 {
+        color: #edf5ff !important;
+    }
+
+    .eyebrow {
+        color: #57dfc5;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 4px;
+    }
+
+    .title {
+        color: #edf5ff;
+        font-size: clamp(40px, 8vw, 76px);
+        font-weight: 800;
+        letter-spacing: 8px;
+        margin: 8px 0;
+    }
+
+    .subtitle {
+        color: #a5b7cb;
+        line-height: 1.8;
+        margin-bottom: 32px;
+    }
+
+    .card-icon {
+        font-size: 44px;
+        margin-bottom: 12px;
+    }
+
+    .card-description {
+        min-height: 75px;
+        color: #a5b7cb;
+        line-height: 1.8;
+    }
+
+    .planet-stage {
+        min-height: 350px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .planet {
+        width: min(260px, 60vw);
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background:
+            radial-gradient(
+                circle at 28% 25%,
+                #ffffff99,
+                transparent 32%
+            ),
+            radial-gradient(
+                circle at 35% 35%,
+                var(--planet-color),
+                var(--planet-color) 30%,
+                #07101e 85%
+            );
+        box-shadow:
+            0 0 65px var(--planet-color),
+            inset -24px -20px 40px #00000088;
+    }
+
+    .planet-label {
+        text-align: center;
+        color: #a5b7cb;
+        letter-spacing: 3px;
+        margin-bottom: 25px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+if "world" not in st.session_state:
+    st.session_state.world = None
+
+
+def create_world(preset_name, name):
+    """선택한 초기 설정으로 새 세계를 만듭니다."""
+    world = deepcopy(PRESETS[preset_name])
+
+    world.update(
+        {
+            "name": name.strip() or "이름 없는 지구",
+            "stage": preset_name,
+            "years": 0,
+            "civilization": 0,
+            "history": [
+                f"{preset_name} 상태로 세계가 탄생했습니다."
+            ],
+        }
     )
 
-    initial_food = st.slider(
-        "초기 먹이 수",
-        min_value=0,
-        max_value=1000,
-        value=200,
-        step=10,
+    st.session_state.world = world
+
+
+def reset_world():
+    st.session_state.world = None
+
+
+st.markdown(
+    '<div class="eyebrow">CREATE · OBSERVE · EVOLVE</div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="title">GENESIS</div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="subtitle">'
+    "지구의 설계자 — 당신의 손에서 새로운 세계가 시작됩니다."
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+
+if st.session_state.world is None:
+    st.subheader("01 / 세계의 시작")
+
+    name = st.text_input(
+        "세계 이름",
+        value="나의 첫 번째 지구",
+        max_chars=30,
     )
 
-    seed = st.number_input(
-        "배치 시드",
-        min_value=0,
-        max_value=1_000_000,
-        value=42,
-        step=1,
-        help="같은 시드와 같은 개체 수를 설정하면 같은 위치에 배치됩니다.",
+    st.write("")
+    columns = st.columns(3)
+
+    for column, (preset_name, preset) in zip(
+        columns, PRESETS.items()
+    ):
+        with column:
+            with st.container(border=True):
+                st.markdown(
+                    f'<div class="card-icon">{preset["icon"]}</div>',
+                    unsafe_allow_html=True,
+                )
+
+                st.subheader(preset_name)
+
+                st.markdown(
+                    '<div class="card-description">'
+                    f'{preset["description"]}'
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+                st.divider()
+
+                st.write(
+                    f"🌡️ 초기 온도 · {preset['temperature']} °C"
+                )
+                st.write(
+                    f"🌊 바다 비율 · {preset['ocean']}%"
+                )
+                st.write(
+                    f"🌱 생명량 · {preset['life']}"
+                )
+
+                st.button(
+                    "이 세계 창조하기",
+                    key=f"create_{preset_name}",
+                    type="primary",
+                    use_container_width=True,
+                    on_click=create_world,
+                    args=(preset_name, name),
+                )
+
+    st.caption(
+        "게임용으로 단순화한 초기 조건입니다. "
+        "생명량은 개체 수가 아닌 상대적인 지표입니다."
+    )
+
+else:
+    world = st.session_state.world
+
+    left, right = st.columns([4, 1])
+
+    with left:
+        st.subheader(f"🌍 {world['name']}")
+        st.caption(
+            f"{world['stage']} · 경과 시간 {world['years']:,}년"
+        )
+
+    with right:
+        st.button(
+            "새 세계 만들기",
+            on_click=reset_world,
+            use_container_width=True,
+        )
+
+    st.markdown(
+        f"""
+        <div class="planet-stage">
+            <div
+                class="planet"
+                style="--planet-color: {world['color']};"
+            ></div>
+        </div>
+        <div class="planet-label">
+            {escape(world["name"])}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    columns = st.columns(4)
+
+    columns[0].metric(
+        "평균 기온",
+        f"{world['temperature']:,} °C",
+    )
+    columns[1].metric(
+        "바다 비율",
+        f"{world['ocean']}%",
+    )
+    columns[2].metric(
+        "생명량",
+        world["life"],
+    )
+    columns[3].metric(
+        "문명 수준",
+        world["civilization"],
     )
 
     st.divider()
-    st.markdown("🟢 **생물: 초록색**")
-    st.markdown("🟠 **먹이: 주황색**")
-    st.caption("먹이 수를 0으로 내리면 생물만 확인할 수 있습니다.")
+    st.subheader("세계의 역사")
 
+    for event in reversed(world["history"]):
+        st.write(f"✦ {event}")
 
-# ──────────────────────────────
-# 좌표 생성
-# 생물·먹이의 난수 생성기를 분리
-# ──────────────────────────────
-organism_rng = random.Random(int(seed))
-food_rng = random.Random(int(seed) + 1)
-
-organisms = [
-    {
-        "x": organism_rng.uniform(0, 100),
-        "y": organism_rng.uniform(0, 100),
-        "종류": "생물",
-    }
-    for _ in range(initial_population)
-]
-
-foods = [
-    {
-        "x": food_rng.uniform(0, 100),
-        "y": food_rng.uniform(0, 100),
-        "종류": "먹이",
-    }
-    for _ in range(initial_food)
-]
-
-# 먹이를 먼저, 생물을 나중에 추가
-map_data = pd.DataFrame(
-    foods + organisms,
-    columns=["x", "y", "종류"],
-)
-
-
-# ──────────────────────────────
-# 개체 수 표시
-# ──────────────────────────────
-left, right = st.columns(2)
-
-with left:
-    st.metric("🟢 생물 수", f"{len(organisms)}마리")
-
-with right:
-    st.metric("🟠 먹이 수", f"{len(foods)}개")
-
-
-# ──────────────────────────────
-# 지도
-# 종류와 색상의 대응을 명시적으로 고정
-# ──────────────────────────────
-st.subheader("🌍 초기 세계")
-
-chart = (
-    alt.Chart(map_data)
-    .mark_circle(opacity=0.85)
-    .encode(
-        x=alt.X(
-            "x:Q",
-            title="가로 위치",
-            scale=alt.Scale(domain=[0, 100], nice=False),
-        ),
-        y=alt.Y(
-            "y:Q",
-            title="세로 위치",
-            scale=alt.Scale(domain=[0, 100], nice=False),
-        ),
-        color=alt.Color(
-            "종류:N",
-            title="종류",
-            scale=alt.Scale(
-                domain=["생물", "먹이"],
-                range=["#22c55e", "#f59e0b"],
-            ),
-            legend=alt.Legend(orient="top"),
-        ),
-        size=alt.Size(
-            "종류:N",
-            scale=alt.Scale(
-                domain=["생물", "먹이"],
-                range=[90, 35],
-            ),
-            legend=None,
-        ),
-        tooltip=[
-            alt.Tooltip("종류:N", title="종류"),
-            alt.Tooltip("x:Q", title="가로 위치", format=".1f"),
-            alt.Tooltip("y:Q", title="세로 위치", format=".1f"),
-        ],
+    st.info(
+        "첫 단계: 세계 생성 완료. "
+        "환경 조절과 시간 진행은 다음 단계에서 연결합니다."
     )
-    .properties(height=550)
-)
-
-st.altair_chart(
-    chart,
-    width="stretch",
-    theme=None,
-)
-
-st.caption(
-    "큰 초록색 점은 생물, 작은 주황색 점은 먹이입니다. "
-    "위치가 가까운 점은 겹쳐 보일 수 있습니다."
-)
-
-
-# ──────────────────────────────
-# 확인용 데이터
-# ──────────────────────────────
-with st.expander("🔍 배치 데이터 확인"):
-    st.write(
-        {
-            "생물 수": len(organisms),
-            "먹이 수": len(foods),
-            "배치 시드": int(seed),
-        }
-    )
-    st.dataframe(map_data, hide_index=True)

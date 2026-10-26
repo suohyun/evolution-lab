@@ -160,6 +160,12 @@ def create_world(preset_name, name):
 
 
 def reset_world():
+    for preset_name in PRESETS:
+        st.session_state.pop(
+            f"temperature_{preset_name}",
+            None,
+        )
+
     st.session_state.world = None
 
 
@@ -239,8 +245,40 @@ if st.session_state.world is None:
 else:
     world = st.session_state.world
 
-    left, right = st.columns([4, 1])
+    # 세계마다 별도의 온도 조절 상태를 사용합니다.
+    temperature_key = f"temperature_{world['stage']}"
 
+    if temperature_key not in st.session_state:
+        st.session_state[temperature_key] = world["temperature"]
+
+    with st.sidebar:
+        st.header("⚡ 신의 제어판")
+        st.caption("온도를 바꿔 행성의 모습을 조절하세요.")
+
+        temperature = st.slider(
+            "🌡️ 평균 기온",
+            min_value=-100,
+            max_value=1500,
+            step=1,
+            key=temperature_key,
+            format="%d °C",
+        )
+
+        st.caption(
+            "색상 구간은 실제 행성의 모습이 아닌 게임용 표현입니다."
+        )
+
+    world["temperature"] = temperature
+
+    # 게임용 온도별 색상 규칙
+    if temperature >= 100:
+        world["color"] = "#f97346"
+    elif temperature <= 0:
+        world["color"] = "#b7e5ff"
+    else:
+        world["color"] = "#359cfa"
+
+    left, right = st.columns([4, 1])
     with left:
         st.subheader(f"🌍 {world['name']}")
         st.caption(

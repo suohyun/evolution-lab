@@ -24,31 +24,58 @@ st.metric("설정한 초기 생물 수", f"{initial_population}마리")
 import random
 
 st.divider()
-st.subheader("🌍 생물 초기 배치")
+st.subheader("🌍 생물과 먹이 초기 배치")
 
-# 같은 설정에서 위치를 재현하기 위한 난수 생성기
-rng = random.Random(42)
+initial_food = st.slider(
+    "초기 먹이 수",
+    min_value=0,
+    max_value=1000,
+    value=200,
+    step=10,
+)
 
-# 초기 생물 수만큼 좌표 생성
+# 생물과 먹이의 난수 생성기를 분리
+organism_rng = random.Random(42)
+food_rng = random.Random(100)
+
+# 생물 배치
 organisms = [
     {
-        "x": rng.uniform(0, 100),
-        "y": rng.uniform(0, 100),
+        "x": organism_rng.uniform(0, 100),
+        "y": organism_rng.uniform(0, 100),
+        "color": "#22c55e",
     }
     for _ in range(initial_population)
 ]
 
-# 각 생물을 점으로 표시
+# 먹이 배치
+foods = [
+    {
+        "x": food_rng.uniform(0, 100),
+        "y": food_rng.uniform(0, 100),
+        "color": "#f59e0b",
+    }
+    for _ in range(initial_food)
+]
+
+# 먹이를 먼저 그리고 그 위에 생물 표시
+map_data = foods + organisms
+
 st.scatter_chart(
-    organisms,
+    map_data,
     x="x",
     y="y",
-    color="#22c55e",
+    color="color",
     size=60,
     height=500,
 )
 
-st.caption(
-    f"초록색 점 하나가 생물 한 마리입니다. "
-    f"현재 {len(organisms)}마리를 배치했습니다."
-)
+st.caption("🟢 초록색: 생물 / 🟠 주황색: 먹이")
+
+left, right = st.columns(2)
+
+with left:
+    st.metric("생물 수", f"{len(organisms)}마리")
+
+with right:
+    st.metric("먹이 수", f"{len(foods)}개")

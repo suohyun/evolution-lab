@@ -1,3 +1,1 @@
-streamlit>=1.56,<2
-altair>=5,<7
-pandas>=2,<3
+streamlit>=1.40,<2

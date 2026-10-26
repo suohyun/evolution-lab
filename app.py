@@ -251,9 +251,29 @@ else:
     if temperature_key not in st.session_state:
         st.session_state[temperature_key] = world["temperature"]
 
-    with st.sidebar:
+       with st.sidebar:
         st.header("⚡ 신의 제어판")
-        st.caption("온도를 바꿔 행성의 모습을 조절하세요.")
+        st.caption("환경을 설정하고 세계의 변화를 관찰하세요.")
+
+        world["solar_energy"] = st.slider(
+            "☀️ 태양 에너지",
+            min_value=0,
+            max_value=200,
+            value=int(world.get("solar_energy", 100)),
+            step=5,
+            help="100을 기준으로 한 게임용 에너지 지표입니다.",
+        )
+
+        world["volcanic_activity"] = st.slider(
+            "🌋 화산 활동",
+            min_value=0,
+            max_value=100,
+            value=int(world.get("volcanic_activity", 20)),
+            step=5,
+            help="이번 게임에서는 높을수록 가열 효과가 커지게 만들 예정입니다.",
+        )
+
+        st.divider()
 
         temperature = st.slider(
             "🌡️ 평균 기온",

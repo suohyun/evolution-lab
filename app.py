@@ -538,20 +538,22 @@ else:
         world["civilization"],
     )
 
-    # ---------- 시간 진행 ----------
+       # ---------- 시간 배속 ----------
     st.write("")
-    st.subheader("시간의 흐름")
+    st.subheader("⏳ 시간의 흐름")
 
-    st.button(
-        "⏭ 100만 년 진행",
-        type="primary",
-        use_container_width=True,
-        on_click=advance_time,
+    st.select_slider(
+        "시간 배속",
+        options=[1, 5, 20],
+        value=1,
+        format_func=lambda speed: f"×{speed}",
+        key="time_speed",
     )
 
     st.caption(
-        "한 번 진행할 때마다 목표 온도와의 차이를 "
-        "10%씩 좁히는 게임 규칙입니다."
+        "×1: 초당 100만 년 · "
+        "×5: 초당 500만 년 · "
+        "×20: 초당 2,000만 년"
     )
 
     # ---------- 사건 기록 ----------

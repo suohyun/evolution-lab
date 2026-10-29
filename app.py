@@ -2,6 +2,7 @@ from copy import deepcopy
 from html import escape
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # ==========================================
@@ -488,26 +489,209 @@ else:
         f"경과 시간 · {world['years']:,}년"
     )
 
-    # ---------- 행성 시각화 ----------
+       # ---------- 3D 행성 시각화 ----------
     planet_color = get_planet_color(
         world["temperature"]
     )
 
-    safe_name = escape(world["name"])
+    # HTML에 넣을 색상은 코드에서 정한 색상값만 사용합니다.
+    planet_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            html, body {
+                margin: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background: #080f1d;
+            }
 
-    st.markdown(
-        f"""
-        <div class="planet-stage">
-            <div
-                class="planet"
-                style="--planet-color: {planet_color};"
-            ></div>
-        </div>
-        <div class="planet-label">{safe_name}</div>
-        """,
-        unsafe_allow_html=True,
+            #scene {
+                width: 100%;
+                height: 420px;
+            }
+
+            #notice {
+                position: absolute;
+                bottom: 16px;
+                width: 100%;
+                color: #a5b7cb;
+                text-align: center;
+                font: 12px sans-serif;
+                letter-spacing: 2px;
+                pointer-events: none;
+            }
+        </style>
+    </head>
+
+    <body>
+        <div id="scene"></div>
+        <div id="notice">GENESIS · PLANET OBSERVATORY</div>
+
+        <script type="module">
+            import * as THREE from
+                "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
+
+            const container = document.getElementById("scene");
+
+            try {
+                const scene = new THREE.Scene();
+
+                const camera = new THREE.PerspectiveCamera(
+                    45,
+                    1,
+                    0.1,
+                    100
+                );
+                camera.position.z = 4.5;
+
+                const renderer = new THREE.WebGLRenderer({
+                    antialias: true,
+                    alpha: true
+                });
+
+                renderer.setPixelRatio(
+                    Math.min(window.devicePixelRatio, 2)
+                );
+
+                container.appendChild(renderer.domElement);
+
+                // 온도에 따라 색이 달라지는 행성
+                const geometry = new THREE.SphereGeometry(
+                    1.25,
+                    64,
+                    48
+                );
+
+                const material = new THREE.MeshStandardMaterial({
+                    color: "__PLANET_COLOR__",
+                    roughness: 0.75,
+                    metalness: 0.05
+                });
+
+                const planet = new THREE.Mesh(
+                    geometry,
+                    material
+                );
+
+                planet.rotation.z = 0.15;
+                scene.add(planet);
+
+                // 은은한 주변광
+                const ambientLight = new THREE.AmbientLight(
+                    0xc5deff,
+                    0.8
+                );
+                scene.add(ambientLight);
+
+                // 한쪽에서 비추는 태양광
+                const sunlight = new THREE.DirectionalLight(
+                    0xffffff,
+                    3
+                );
+                sunlight.position.set(-3, 2, 4);
+                scene.add(sunlight);
+
+                // 반대편의 약한 청색 빛
+                const rimLight = new THREE.DirectionalLight(
+                    0x38bdf8,
+                    1
+                );
+                rimLight.position.set(3, 0, -2);
+                scene.add(rimLight);
+
+                // 별 배경
+                const starPositions = [];
+
+                for (let i = 0; i < 500; i++) {
+                    starPositions.push(
+                        (Math.random() - 0.5) * 20,
+                        (Math.random() - 0.5) * 12,
+                        -4 - Math.random() * 10
+                    );
+                }
+
+                const starGeometry = new THREE.BufferGeometry();
+
+                starGeometry.setAttribute(
+                    "position",
+                    new THREE.Float32BufferAttribute(
+                        starPositions,
+                        3
+                    )
+                );
+
+                const stars = new THREE.Points(
+                    starGeometry,
+                    new THREE.PointsMaterial({
+                        color: 0xdbeafe,
+                        size: 0.025
+                    })
+                );
+
+                scene.add(stars);
+
+                function resize() {
+                    const width = Math.max(
+                        container.clientWidth,
+                        1
+                    );
+                    const height = 420;
+
+                    renderer.setSize(width, height);
+                    camera.aspect = width / height;
+                    camera.updateProjectionMatrix();
+                }
+
+                new ResizeObserver(resize).observe(container);
+                resize();
+
+                let previousTime = null;
+
+                function animate(time) {
+                    const delta = previousTime === null
+                        ? 0
+                        : Math.min(
+                            (time - previousTime) / 1000,
+                            0.1
+                        );
+
+                    previousTime = time;
+
+                    planet.rotation.y += delta * 0.15;
+
+                    renderer.render(scene, camera);
+                    requestAnimationFrame(animate);
+                }
+
+                requestAnimationFrame(animate);
+            } catch (error) {
+                document.getElementById("notice").textContent =
+                    "3D 표시 실패: " + error.message;
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+    planet_html = planet_html.replace(
+        "__PLANET_COLOR__",
+        planet_color,
     )
 
+    components.html(
+        planet_html,
+        height=420,
+        scrolling=False,
+    )
+
+    st.caption(
+        f"🌍 {world['name']} · "
+        f"평균 기온 {world['temperature']:,.1f} °C"
+    )
     # ---------- 상태 지표 ----------
     delta = None
 

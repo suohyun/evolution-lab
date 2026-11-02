@@ -1,3 +1,4 @@
+import json
 import math
 import time
 from copy import deepcopy
@@ -17,29 +18,18 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
+SAVE_VERSION = 2
 
-PRESETS = {
-    "원시 지구": {
-        "icon": "🔥",
-        "description": "뜨거운 행성을 식혀 바다와 생명을 만드세요.",
-        "temperature": 1000.0,
-        "ocean": 0.0,
-        "cells": 0,
-    },
-    "바다의 지구": {
-        "icon": "🌊",
-        "description": "바다에서 최초의 세포를 탄생시키세요.",
-        "temperature": 35.0,
-        "ocean": 70.0,
-        "cells": 0,
-    },
-    "생명의 지구": {
-        "icon": "🌱",
-        "description": "세포를 가진 상태에서 진화를 시작하세요.",
-        "temperature": 22.0,
-        "ocean": 65.0,
-        "cells": 1,
-    },
+INITIAL_WORLD = {
+    "temperature": 1000.0,
+    "ocean": 0.0,
+    "cells": 0,
+    "energy": 20.0,
+    "cell_cost": 10.0,
+    "research": [],
+    "solar": 100,
+    "volcano": 20,
+    "years": 0.0,
 }
 
 RESEARCH = {
@@ -62,6 +52,64 @@ RESEARCH = {
         "requires": "photosynthesis",
     },
 }
+
+SPECIES = {
+    "photosynthetic": {
+        "name": "광합성 생물",
+        "icon": "☀️",
+        "unlock_seconds": 30.0,
+        "growth_per_second": 0.1,
+        "max_population": 1000,
+        "condition": "세포 5개 이상 · 온도 0~50°C · 바다 10% 이상",
+    },
+    "multicellular": {
+        "name": "다세포 생물",
+        "icon": "🪸",
+        "unlock_seconds": 45.0,
+        "growth_per_second": 0.05,
+        "max_population": 1000,
+        "condition": "광합성 생물 해금 · 온도 0~50°C · 바다 10% 이상",
+    },
+    "plants": {
+        "name": "육상 식물",
+        "icon": "🌿",
+        "unlock_seconds": 60.0,
+        "growth_per_second": 0.1,
+        "max_population": 1000,
+        "condition": "다세포 생물 해금 · 온도 0~50°C · 육지 존재",
+    },
+    "marine_animals": {
+        "name": "해양 동물",
+        "icon": "🐟",
+        "unlock_seconds": 60.0,
+        "growth_per_second": 0.1,
+        "max_population": 1000,
+        "condition": "다세포 생물 해금 · 온도 0~50°C · 바다 10% 이상",
+    },
+    "land_animals": {
+        "name": "육상 동물",
+        "icon": "🦎",
+        "unlock_seconds": 90.0,
+        "growth_per_second": 0.05,
+        "max_population": 1000,
+        "condition": "육상 식물 20개 이상 · 해양 동물 해금 · 온도 0~50°C",
+    },
+}
+
+
+def new_biological_state():
+    return {
+        "organisms": {species_id: 0 for species_id in SPECIES},
+        "evolution_progress": {species_id: 0.0 for species_id in SPECIES},
+        "growth_progress": {species_id: 0.0 for species_id in SPECIES},
+    }
+
+
+def ensure_biological_state(world):
+    defaults = new_biological_state()
+    for field, values in defaults.items():
+        world.setdefault(field, values)
+
 
 # 이전 버전에서 남은 상태와 충돌하지 않도록 초기화합니다.
 if st.session_state.get("genesis_version") != VERSION:
@@ -158,6 +206,279 @@ def add_log(world, message):
     world["history"] = world["history"][-40:]
 
 
+def export_world(world, speed):
+    ensure_biological_state(world)
+    return {
+        "save_version": SAVE_VERSION,
+        "world": {
+            "name": world["name"],
+            "temperature": world["temperature"],
+            "ocean": world["ocean"],
+            "years": world["years"],
+            "energy": world["energy"],
+            "cells": world["cells"],
+            "cell_cost": world["cell_cost"],
+            "research": world["research"],
+            "solar": world["solar"],
+            "volcano": world["volcano"],
+            "speed": speed,
+            "life_ready_logged": world["life_ready_logged"],
+            "history": world["history"],
+            "organisms": world["organisms"],
+            "evolution_progress": world["evolution_progress"],
+            "growth_progress": world["growth_progress"],
+        },
+    }
+
+
+def validate_save_data(data):
+    if not isinstance(data, dict) or set(data) != {"save_version", "world"}:
+        raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
+
+    save_version = data["save_version"]
+    if type(save_version) is not int or save_version not in (1, SAVE_VERSION):
+        raise ValueError("지원하지 않는 저장 파일 버전입니다.")
+
+    legacy_fields = {
+        "name",
+        "temperature",
+        "ocean",
+        "years",
+        "energy",
+        "cells",
+        "cell_cost",
+        "research",
+        "solar",
+        "volcano",
+        "speed",
+        "life_ready_logged",
+        "history",
+    }
+    biological_fields = {
+        "organisms",
+        "evolution_progress",
+        "growth_progress",
+    }
+    fields = (
+        legacy_fields | biological_fields
+        if save_version >= 2
+        else legacy_fields
+    )
+    saved_world = data["world"]
+    if not isinstance(saved_world, dict) or set(saved_world) != fields:
+        raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
+
+    name = saved_world["name"]
+    if not isinstance(name, str) or not name.strip() or len(name) > 30:
+        raise ValueError("세계 이름은 1~30자여야 합니다.")
+
+    numeric_ranges = {
+        "temperature": (-1000.0, 2000.0),
+        "ocean": (0.0, 70.0),
+        "years": (0.0, 1e18),
+        "energy": (0.0, 1e300),
+        "cell_cost": (0.0, 1e300),
+    }
+    labels = {
+        "temperature": "온도",
+        "ocean": "바다 비율",
+        "years": "경과 연수",
+        "energy": "생명 에너지",
+        "cell_cost": "다음 세포 가격",
+    }
+    values = {}
+    for field, (minimum, maximum) in numeric_ranges.items():
+        value = saved_world[field]
+        if type(value) not in (int, float):
+            raise ValueError(f"{labels[field]} 값은 숫자여야 합니다.")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{labels[field]} 값은 유한한 숫자여야 합니다.")
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{labels[field]} 값이 허용 범위를 벗어났습니다.")
+        values[field] = float(value)
+
+    if values["cell_cost"] <= 0:
+        raise ValueError("다음 세포 가격은 0보다 커야 합니다.")
+
+    cells = saved_world["cells"]
+    if type(cells) is not int or not 0 <= cells <= 1_000_000_000:
+        raise ValueError("세포 수는 0~1,000,000,000 사이의 정수여야 합니다.")
+
+    for field, maximum in (("solar", 200), ("volcano", 100)):
+        value = saved_world[field]
+        if type(value) is not int or not 0 <= value <= maximum:
+            label = "태양 에너지" if field == "solar" else "화산 활동"
+            raise ValueError(f"{label} 값이 허용 범위를 벗어났습니다.")
+
+    speed = saved_world["speed"]
+    if type(speed) is not int or speed not in (0, 1, 5, 20):
+        raise ValueError("배속 값이 올바르지 않습니다.")
+
+    research = saved_world["research"]
+    if not isinstance(research, list) or len(research) > len(RESEARCH):
+        raise ValueError("연구 목록 형식이 올바르지 않습니다.")
+    if any(not isinstance(item, str) or item not in RESEARCH for item in research):
+        raise ValueError("알 수 없는 연구가 포함되어 있습니다.")
+    if len(set(research)) != len(research):
+        raise ValueError("연구 목록에 중복 항목이 있습니다.")
+    for research_id in research:
+        required = RESEARCH[research_id]["requires"]
+        if required and required not in research:
+            raise ValueError("선행 연구가 완료되지 않은 연구가 포함되어 있습니다.")
+
+    life_ready_logged = saved_world["life_ready_logged"]
+    if type(life_ready_logged) is not bool:
+        raise ValueError("생명 환경 기록 상태가 올바르지 않습니다.")
+
+    history = saved_world["history"]
+    if (
+        not isinstance(history, list)
+        or len(history) > 40
+        or any(not isinstance(event, str) or len(event) > 500 for event in history)
+    ):
+        raise ValueError("사건 기록 형식이 올바르지 않습니다.")
+
+    biological_state = new_biological_state()
+    if save_version >= 2:
+        organisms = saved_world["organisms"]
+        evolution_progress = saved_world["evolution_progress"]
+        growth_progress = saved_world["growth_progress"]
+        for field, values in (
+            ("organisms", organisms),
+            ("evolution_progress", evolution_progress),
+            ("growth_progress", growth_progress),
+        ):
+            if not isinstance(values, dict) or set(values) != set(SPECIES):
+                raise ValueError("생물 상태 저장 형식이 올바르지 않습니다.")
+
+        for species_id, species in SPECIES.items():
+            count = organisms[species_id]
+            if (
+                type(count) is not int
+                or count < 0
+                or count > species["max_population"]
+            ):
+                raise ValueError(f"{species['name']} 수가 허용 범위를 벗어났습니다.")
+
+            for progress_name, progress_values, maximum in (
+                ("해금 진행률", evolution_progress, species["unlock_seconds"]),
+                ("증식 진행률", growth_progress, 1.0),
+            ):
+                progress = progress_values[species_id]
+                if (
+                    type(progress) not in (int, float)
+                    or (
+                        isinstance(progress, float)
+                        and not math.isfinite(progress)
+                    )
+                    or not 0 <= progress < maximum
+                ):
+                    raise ValueError(
+                        f"{species['name']} {progress_name}이 올바르지 않습니다."
+                    )
+
+            biological_state["organisms"][species_id] = count
+            biological_state["evolution_progress"][species_id] = float(
+                evolution_progress[species_id]
+            )
+            biological_state["growth_progress"][species_id] = float(
+                growth_progress[species_id]
+            )
+            if count == 0 and biological_state["growth_progress"][species_id] != 0:
+                raise ValueError("잠긴 생물의 증식 진행률은 0이어야 합니다.")
+
+        populations = biological_state["organisms"]
+        if populations["multicellular"] and not populations["photosynthetic"]:
+            raise ValueError("다세포 생물은 광합성 생물 해금 후 존재할 수 있습니다.")
+        if (
+            (populations["plants"] or populations["marine_animals"])
+            and not populations["multicellular"]
+        ):
+            raise ValueError(
+                "육상 식물과 해양 동물은 다세포 생물 해금 후 존재할 수 있습니다."
+            )
+        if populations["land_animals"] and (
+            populations["plants"] < 20 or not populations["marine_animals"]
+        ):
+            raise ValueError("육상 동물 해금 조건이 충족되지 않은 저장 파일입니다.")
+
+    return {
+        **values,
+        "name": name,
+        "cells": cells,
+        "research": research,
+        "solar": saved_world["solar"],
+        "volcano": saved_world["volcano"],
+        "speed": speed,
+        "life_ready_logged": life_ready_logged,
+        "history": history,
+        **biological_state,
+    }
+
+
+def reject_json_constant(value):
+    raise ValueError(f"허용되지 않는 숫자 값입니다: {value}")
+
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("JSON에 중복된 항목이 있습니다.")
+        result[key] = value
+    return result
+
+
+def load_uploaded_world():
+    uploaded_file = st.session_state.get("genesis_save_upload")
+    if uploaded_file is None:
+        st.session_state.genesis_save_message = (
+            "불러올 JSON 파일을 먼저 선택해 주세요."
+        )
+        st.session_state.genesis_save_error = True
+        return
+
+    try:
+        data = json.loads(
+            uploaded_file.getvalue().decode("utf-8"),
+            parse_constant=reject_json_constant,
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        saved = validate_save_data(data)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        st.session_state.genesis_save_message = (
+            f"저장 파일을 불러오지 못했습니다: {error}"
+        )
+        st.session_state.genesis_save_error = True
+        return
+
+    world = {
+        "name": saved["name"],
+        "temperature": saved["temperature"],
+        "ocean": saved["ocean"],
+        "years": saved["years"],
+        "energy": saved["energy"],
+        "cells": saved["cells"],
+        "cell_cost": saved["cell_cost"],
+        "research": saved["research"],
+        "solar": saved["solar"],
+        "volcano": saved["volcano"],
+        "last_tick": time.monotonic(),
+        "life_ready_logged": saved["life_ready_logged"],
+        "history": saved["history"],
+        "organisms": saved["organisms"],
+        "evolution_progress": saved["evolution_progress"],
+        "growth_progress": saved["growth_progress"],
+    }
+    st.session_state.genesis_world = world
+    st.session_state.genesis_speed = saved["speed"]
+    st.session_state.genesis_solar = saved["solar"]
+    st.session_state.genesis_volcano = saved["volcano"]
+    st.session_state.confirm_reset = False
+    st.session_state.genesis_save_message = "저장 파일을 불러왔습니다."
+    st.session_state.genesis_save_error = False
+
+
 def target_temperature(world):
     # 실제 기후 공식이 아닌 게임용 모델입니다.
     return (
@@ -209,6 +530,86 @@ def can_create_cell(world):
     )
 
 
+def biological_conditions(world):
+    comfortable_temperature = 0 <= world["temperature"] <= 50
+    ocean_available = world["ocean"] >= 10
+    land_available = world["ocean"] < 100
+    organisms = world["organisms"]
+
+    return {
+        "photosynthetic": (
+            world["cells"] >= 5
+            and comfortable_temperature
+            and ocean_available
+        ),
+        "multicellular": (
+            organisms["photosynthetic"] > 0
+            and comfortable_temperature
+            and ocean_available
+        ),
+        "plants": (
+            organisms["multicellular"] > 0
+            and comfortable_temperature
+            and land_available
+        ),
+        "marine_animals": (
+            organisms["multicellular"] > 0
+            and comfortable_temperature
+            and ocean_available
+        ),
+        "land_animals": (
+            organisms["plants"] >= 20
+            and organisms["marine_animals"] > 0
+            and comfortable_temperature
+        ),
+    }
+
+
+def advance_biology(world, simulated_seconds, conditions=None):
+    starting_populations = world["organisms"].copy()
+    if conditions is None:
+        conditions = biological_conditions(world)
+
+    for species_id, species in SPECIES.items():
+        if starting_populations[species_id] > 0 or not conditions[species_id]:
+            continue
+
+        progress = world["evolution_progress"][species_id] + simulated_seconds
+        if progress >= species["unlock_seconds"]:
+            world["organisms"][species_id] = 1
+            world["evolution_progress"][species_id] = 0.0
+            add_log(
+                world,
+                f"{species['icon']} {species['name']}이(가) 처음 등장했습니다.",
+            )
+        else:
+            world["evolution_progress"][species_id] = progress
+
+    for species_id, species in SPECIES.items():
+        population = starting_populations[species_id]
+        if population == 0 or not conditions[species_id]:
+            continue
+
+        if population >= species["max_population"]:
+            world["growth_progress"][species_id] = 0.0
+            continue
+
+        growth = (
+            world["growth_progress"][species_id]
+            + species["growth_per_second"] * simulated_seconds
+        )
+        increase = int(growth)
+        world["organisms"][species_id] = min(
+            species["max_population"],
+            population + increase,
+        )
+        world["growth_progress"][species_id] = (
+            growth - increase
+            if world["organisms"][species_id] < species["max_population"]
+            else 0.0
+        )
+
+
 def stage_name(world):
     if "multicellular" in world["research"]:
         return "다세포 연구 시대"
@@ -232,6 +633,7 @@ def tick():
     if world is None:
         return
 
+    ensure_biological_state(world)
     now = time.monotonic()
 
     # 긴 연결 중단을 오프라인 보상으로 계산하지 않습니다.
@@ -243,6 +645,8 @@ def tick():
 
     if simulated_seconds <= 0:
         return
+
+    biology_conditions = biological_conditions(world)
 
     # 환경 변화 전후의 생산량을 평균내어 자원을 계산합니다.
     old_rate = production_rate(world)
@@ -285,6 +689,8 @@ def tick():
         * simulated_seconds
     )
 
+    advance_biology(world, simulated_seconds, biology_conditions)
+
     if can_create_cell(world) and not world["life_ready_logged"]:
         world["life_ready_logged"] = True
         add_log(
@@ -293,23 +699,17 @@ def tick():
         )
 
 
-def create_world(preset_name, name):
-    world = deepcopy(PRESETS[preset_name])
-
+def create_world(name):
+    world = deepcopy(INITIAL_WORLD)
     world.update(
         {
             "name": name.strip() or "이름 없는 지구",
-            "energy": 20.0,
-            "cell_cost": 10.0,
-            "research": [],
-            "solar": 100,
-            "volcano": 20,
-            "years": 0.0,
             "last_tick": time.monotonic(),
             "life_ready_logged": False,
             "history": [
-                f"🌍 {preset_name} 상태로 세계가 탄생했습니다."
+                "🌍 원시 지구 상태로 세계가 탄생했습니다."
             ],
+            **new_biological_state(),
         }
     )
 
@@ -317,6 +717,13 @@ def create_world(preset_name, name):
     st.session_state.genesis_speed = 1
     st.session_state.genesis_solar = 100
     st.session_state.genesis_volcano = 20
+    st.session_state.confirm_reset = False
+
+
+def restart_world():
+    world = st.session_state.genesis_world
+    if world is not None:
+        create_world(world["name"])
 
 
 def change_environment():
@@ -596,6 +1003,61 @@ def game_panel():
         f"{world['temperature']:,.1f} °C",
     )
 
+    if world["cells"] == 0:
+        temperature_ready = 0 <= world["temperature"] <= 60
+        ocean_ready = world["ocean"] >= 10
+        ready_conditions = int(temperature_ready) + int(ocean_ready)
+        st.info(
+            "다음 목표: 지구를 식히고 바다를 형성해 최초의 세포를 만드세요. "
+            f"현재 온도 {world['temperature']:.1f}°C "
+            f"({'충족' if temperature_ready else '필요: 0~60°C'}) · "
+            f"바다 {world['ocean']:.1f}% "
+            f"({'충족' if ocean_ready else '필요: 10% 이상'}) · "
+            f"시작 에너지 {world['energy']:.1f} "
+            f"(세포 비용 {world['cell_cost']:.1f})"
+        )
+        st.progress(
+            ready_conditions / 2,
+            text=f"최초 세포 환경 조건 {ready_conditions}/2 충족",
+        )
+
+    st.subheader("🧬 생물 단계")
+    st.caption(
+        "생물 단계는 실제 진화 계통도를 정밀하게 재현한 것이 아닌 게임용 규칙입니다. "
+        "육지가 존재하는 조건은 바다 비율 100% 미만으로 계산합니다. "
+        "해금과 증식 시간은 배속이 반영된 시뮬레이션 초입니다."
+    )
+    biology_columns = st.columns(5)
+    for column, (species_id, species) in zip(
+        biology_columns,
+        SPECIES.items(),
+    ):
+        population = world["organisms"][species_id]
+        with column:
+            with st.container(border=True):
+                st.markdown(f"**{species['icon']} {species['name']}**")
+                st.metric(
+                    "현재 수",
+                    f"{population:,}" if population else "잠김",
+                )
+                if population:
+                    st.caption(
+                        f"🔓 해금 · 최대 {species['max_population']:,} · "
+                        f"증식 {species['growth_per_second']:.2f}/시뮬레이션 초"
+                    )
+                else:
+                    st.caption("🔒 잠김")
+                    progress = world["evolution_progress"][species_id]
+                    ratio = progress / species["unlock_seconds"]
+                    st.caption(species["condition"])
+                    st.progress(
+                        ratio,
+                        text=(
+                            f"해금 진행 {progress:.1f} / "
+                            f"{species['unlock_seconds']:.0f}초"
+                        ),
+                    )
+
     st.write("")
     environment, evolution = st.columns([1, 1.35])
 
@@ -730,6 +1192,20 @@ def game_panel():
         for event in reversed(world["history"][-8:]):
             st.write(event)
 
+    save_json = json.dumps(
+        export_world(world, st.session_state.genesis_speed),
+        ensure_ascii=False,
+        indent=2,
+        allow_nan=False,
+    )
+    st.download_button(
+        "세계 저장 파일 다운로드",
+        data=save_json,
+        file_name="genesis-save.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
 
 # ==================================================
 # 시작 화면 / 플레이 화면
@@ -753,50 +1229,24 @@ st.markdown(
 )
 
 if st.session_state.genesis_world is None:
-    st.subheader("세계의 시작을 선택하세요")
-
     name = st.text_input(
         "세계 이름",
         value="나의 첫 번째 지구",
         max_chars=30,
     )
 
-    columns = st.columns(3)
-
-    for column, (preset_name, preset) in zip(
-        columns,
-        PRESETS.items(),
+    if st.button(
+        "🔥 지구 탄생시키기",
+        key="create_primordial_world",
+        type="primary",
+        use_container_width=True,
     ):
-        with column:
-            with st.container(border=True):
-                st.markdown(f"## {preset['icon']}")
-                st.subheader(preset_name)
-                st.write(preset["description"])
-
-                st.divider()
-
-                st.write(
-                    f"🌡️ 온도: {preset['temperature']:,.0f} °C"
-                )
-                st.write(
-                    f"🌊 바다: {preset['ocean']:.0f}%"
-                )
-                st.write(
-                    f"🦠 세포: {preset['cells']}"
-                )
-                st.write("🌱 시작 에너지: 20")
-
-                if st.button(
-                    "이 세계 창조하기",
-                    key=f"start_{preset_name}",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    create_world(preset_name, name)
-                    st.rerun()
+        create_world(name)
+        st.rerun()
 
     st.caption(
-        "빠르게 기능을 확인하려면 '생명의 지구'를 선택하세요."
+        "모든 새 세계는 뜨거운 원시 지구에서 시작합니다. "
+        "지구를 식히고 바다를 만들어 최초의 세포를 탄생시키세요."
     )
 
 else:
@@ -807,25 +1257,44 @@ else:
     st.divider()
 
     st.checkbox(
-        "현재 세계를 지우고 다시 시작할게요.",
+        "현재 세계를 초기화하고 원시 지구로 다시 시작합니다.",
         key="confirm_reset",
     )
 
-    if st.button(
-        "새 세계 만들기",
+    st.button(
+        "다시 시작",
+        key="restart_world_button",
         disabled=not st.session_state.get(
             "confirm_reset",
             False,
         ),
-    ):
-        st.session_state.genesis_world = None
-        st.session_state.pop("confirm_reset", None)
-        st.rerun()
+        on_click=restart_world,
+    )
 
     st.caption(
         "현재 버전은 자동 저장과 오프라인 보상을 지원하지 않습니다. "
         "브라우저 새로고침이나 연결 종료 시 진행 내용이 사라질 수 있습니다."
     )
+
+with st.expander("저장 파일 불러오기"):
+    st.file_uploader(
+        "GENESIS JSON 저장 파일",
+        type=["json"],
+        key="genesis_save_upload",
+    )
+    st.button(
+        "불러오기",
+        key="genesis_load_save_button",
+        on_click=load_uploaded_world,
+        type="primary",
+    )
+
+    save_message = st.session_state.get("genesis_save_message")
+    if save_message:
+        if st.session_state.get("genesis_save_error", False):
+            st.error(save_message)
+        else:
+            st.success(save_message)
 
 st.caption(
     "교육용 게임 프로토타입 · 환경 수치와 진화 순서는 "

@@ -32,6 +32,9 @@ INITIAL_WORLD = {
     "years": 0.0,
 }
 
+OCEAN_FORMATION_TEMPERATURE = 80.0
+COOLING_RATE_PER_SIMULATED_SECOND = 0.00906
+
 RESEARCH = {
     "metabolism": {
         "name": "🧬 대사 효율",
@@ -311,7 +314,7 @@ def validate_save_data(data):
             raise ValueError(f"{label} 값이 허용 범위를 벗어났습니다.")
 
     speed = saved_world["speed"]
-    if type(speed) is not int or speed not in (0, 1, 5, 20):
+    if type(speed) is not int or speed not in (0, 1, 2, 5, 20):
         raise ValueError("배속 값이 올바르지 않습니다.")
 
     research = saved_world["research"]
@@ -464,6 +467,7 @@ def load_uploaded_world():
         "solar": saved["solar"],
         "volcano": saved["volcano"],
         "last_tick": time.monotonic(),
+        "last_tick_speed": saved["speed"],
         "life_ready_logged": saved["life_ready_logged"],
         "history": saved["history"],
         "organisms": saved["organisms"],
@@ -485,6 +489,42 @@ def target_temperature(world):
         15.0
         + (world["solar"] - 100) * 0.5
         + (world["volcano"] - 20) * 0.2
+    )
+
+
+def temperature_after(current, target, simulated_seconds):
+    if simulated_seconds <= 0:
+        return current
+
+    return target + (current - target) * math.exp(
+        -COOLING_RATE_PER_SIMULATED_SECOND * simulated_seconds
+    )
+
+
+def cooling_progress(world):
+    total_cooling = INITIAL_WORLD["temperature"] - OCEAN_FORMATION_TEMPERATURE
+    progress = (
+        INITIAL_WORLD["temperature"] - world["temperature"]
+    ) / total_cooling
+    return min(max(progress, 0.0), 1.0)
+
+
+def cooling_seconds_remaining(world, speed):
+    if world["temperature"] <= OCEAN_FORMATION_TEMPERATURE:
+        return 0.0
+
+    target = target_temperature(world)
+    if target >= OCEAN_FORMATION_TEMPERATURE or speed <= 0:
+        return None
+
+    temperature_ratio = (
+        (world["temperature"] - target)
+        / (OCEAN_FORMATION_TEMPERATURE - target)
+    )
+    return (
+        math.log(temperature_ratio)
+        / COOLING_RATE_PER_SIMULATED_SECOND
+        / speed
     )
 
 
@@ -641,7 +681,9 @@ def tick():
     world["last_tick"] = now
 
     speed = float(st.session_state.get("genesis_speed", 1))
-    simulated_seconds = elapsed * speed
+    previous_speed = float(world.get("last_tick_speed", speed))
+    world["last_tick_speed"] = speed
+    simulated_seconds = elapsed * previous_speed
 
     if simulated_seconds <= 0:
         return
@@ -653,21 +695,19 @@ def tick():
 
     target = target_temperature(world)
 
-    # ×1에서 1초마다 온도 차이가 약 10% 줄어듭니다.
-    # 배속이 높아도 과도하게 목표 온도를 넘어가지 않습니다.
-    cooling_factor = 1 - math.pow(
-        0.9,
+    world["temperature"] = temperature_after(
+        world["temperature"],
+        target,
         simulated_seconds,
     )
-
-    world["temperature"] += (
-        target - world["temperature"]
-    ) * cooling_factor
 
     world["years"] += simulated_seconds * 1_000_000
 
     # 게임용 규칙: 충분히 식으면 바다가 서서히 형성됩니다.
-    if world["temperature"] <= 80 and world["ocean"] < 70:
+    if (
+        world["temperature"] <= OCEAN_FORMATION_TEMPERATURE
+        and world["ocean"] < 70
+    ):
         previous_ocean = world["ocean"]
 
         world["ocean"] = min(
@@ -705,6 +745,7 @@ def create_world(name):
         {
             "name": name.strip() or "이름 없는 지구",
             "last_tick": time.monotonic(),
+            "last_tick_speed": 1.0,
             "life_ready_logged": False,
             "history": [
                 "🌍 원시 지구 상태로 세계가 탄생했습니다."
@@ -1021,6 +1062,45 @@ def game_panel():
             text=f"최초 세포 환경 조건 {ready_conditions}/2 충족",
         )
 
+    if world["ocean"] < 10:
+        target = target_temperature(world)
+        progress = cooling_progress(world)
+        st.markdown("**현재 목표: 지표 냉각 중**")
+        st.progress(
+            progress,
+            text=(
+                "바다 형성 시작까지 냉각 진행 "
+                f"{progress * 100:.1f}% "
+                f"(목표 온도 {OCEAN_FORMATION_TEMPERATURE:.0f}°C)"
+            ),
+        )
+
+        if world["temperature"] <= OCEAN_FORMATION_TEMPERATURE:
+            st.caption("바다 형성 시작 온도에 도달했습니다.")
+        elif target >= OCEAN_FORMATION_TEMPERATURE:
+            st.caption(
+                "현재 환경에서는 바다 형성 시작 온도에 도달할 수 없습니다. "
+                "태양 에너지나 화산 활동을 조절해 주세요."
+            )
+        elif speed <= 0:
+            st.caption("일시정지 중입니다. 재생하면 남은 시간을 계산합니다.")
+        else:
+            remaining = cooling_seconds_remaining(world, speed)
+            remaining_seconds = math.ceil(remaining)
+            hours, remainder = divmod(remaining_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if hours:
+                estimate = f"{hours}시간 {minutes}분"
+            elif minutes:
+                estimate = f"{minutes}분 {seconds}초"
+            else:
+                estimate = f"{seconds}초"
+            st.caption(f"현재 예상 남은 시간: 약 {estimate}")
+
+        st.caption(
+            "예상 시간은 현재 환경과 배속이 유지될 때의 추정값입니다."
+        )
+
     st.subheader("🧬 생물 단계")
     st.caption(
         "생물 단계는 실제 진화 계통도를 정밀하게 재현한 것이 아닌 게임용 규칙입니다. "
@@ -1068,7 +1148,7 @@ def game_panel():
 
             st.select_slider(
                 "시간 배속",
-                options=[0, 1, 5, 20],
+                options=[0, 1, 2, 5, 20],
                 format_func=lambda value: (
                     "⏸ 일시정지"
                     if value == 0

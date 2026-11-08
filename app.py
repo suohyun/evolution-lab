@@ -834,14 +834,26 @@ def render_planet():
     if world is None:
         return
 
-    temperature = world["temperature"]
-
-    if temperature >= 100:
-        color = "#f97346"
-    elif temperature <= 0:
-        color = "#b7e5ff"
-    else:
-        color = "#359cfa"
+    ensure_biological_state(world)
+    render_state = {
+        "name": world["name"],
+        "temperature": world["temperature"],
+        "ocean": world["ocean"],
+        "species": [
+            {
+                "id": species_id,
+                "name": species["name"],
+                "icon": species["icon"],
+                "count": world["organisms"][species_id],
+            }
+            for species_id, species in SPECIES.items()
+        ],
+    }
+    state_json = json.dumps(
+        render_state,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).replace("<", "\\u003c").replace("&", "\\u0026")
 
     html = """
     <!DOCTYPE html>
@@ -853,35 +865,126 @@ def render_planet():
                 margin: 0;
                 overflow: hidden;
                 background: #080f1d;
+                color: #dce8f5;
+                font-family: sans-serif;
             }
 
             #scene {
                 width: 100%;
-                height: 330px;
+                height: 360px;
+            }
+
+            #label, #species {
+                position: absolute;
+                width: 100%;
+                text-align: center;
+                text-shadow: 0 1px 5px #080f1d;
             }
 
             #label {
-                position: absolute;
-                bottom: 12px;
-                width: 100%;
+                top: 10px;
                 color: #9eb8ce;
-                text-align: center;
-                font: 11px sans-serif;
-                letter-spacing: 3px;
+                font-size: 11px;
+                letter-spacing: 2px;
+            }
+
+            #species {
+                bottom: 9px;
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 5px 12px;
+                padding: 0 8px;
+                box-sizing: border-box;
+                color: #cbd9e8;
+                font-size: 11px;
+            }
+
+            .species-item.locked {
+                color: #73869b;
             }
         </style>
     </head>
     <body>
         <div id="scene"></div>
-        <div id="label">GENESIS · PLANET OBSERVATORY</div>
+        <div id="label"></div>
+        <div id="species"></div>
+        <script id="world-state" type="application/json">__STATE_JSON__</script>
 
         <script type="module">
         try {
             const THREE = await import(
                 "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
             );
+            const state = JSON.parse(
+                document.getElementById("world-state").textContent
+            );
+            const clamp = (value, min, max) =>
+                Math.min(Math.max(value, min), max);
+            const smoothstep = (edge0, edge1, value) => {
+                const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+                return t * t * (3 - 2 * t);
+            };
+            const mixColor = (from, to, amount) => from.map(
+                (channel, index) =>
+                    Math.round(channel + (to[index] - channel) * amount)
+            );
+            const seed = Array.from(state.name).reduce(
+                (value, char) => Math.imul(value ^ char.charCodeAt(0), 16777619),
+                2166136261
+            ) >>> 0;
+            const hash3 = (x, y, z, offset) => {
+                let value = (
+                    Math.imul(x, 374761393)
+                    + Math.imul(y, 668265263)
+                    + Math.imul(z, 2147483647)
+                    + offset
+                ) | 0;
+                value = Math.imul(value ^ (value >>> 13), 1274126177);
+                return ((value ^ (value >>> 16)) >>> 0) / 4294967295;
+            };
+            const noise3 = (x, y, z, offset) => {
+                const x0 = Math.floor(x);
+                const y0 = Math.floor(y);
+                const z0 = Math.floor(z);
+                const fx = x - x0;
+                const fy = y - y0;
+                const fz = z - z0;
+                const sx = fx * fx * (3 - 2 * fx);
+                const sy = fy * fy * (3 - 2 * fy);
+                const sz = fz * fz * (3 - 2 * fz);
+                const low = (dx, dy) => (
+                    hash3(x0, y0 + dy, z0 + dx, offset) * (1 - sx)
+                    + hash3(x0 + 1, y0 + dy, z0 + dx, offset) * sx
+                );
+                const plane0 = low(0, 0) * (1 - sy) + low(0, 1) * sy;
+                const plane1 = (
+                    hash3(x0, y0, z0 + 1, offset) * (1 - sx) * (1 - sy)
+                    + hash3(x0 + 1, y0, z0 + 1, offset) * sx * (1 - sy)
+                    + hash3(x0, y0 + 1, z0 + 1, offset) * (1 - sx) * sy
+                    + hash3(x0 + 1, y0 + 1, z0 + 1, offset) * sx * sy
+                );
+                return plane0 * (1 - sz) + plane1 * sz;
+            };
 
             const container = document.getElementById("scene");
+            const label = document.getElementById("label");
+            label.textContent =
+                "GENESIS · "
+                + state.temperature.toFixed(1) + "°C · 바다 "
+                + state.ocean.toFixed(1) + "%";
+
+            const speciesContainer = document.getElementById("species");
+            for (const species of state.species) {
+                const item = document.createElement("span");
+                item.className = "species-item"
+                    + (species.count > 0 ? "" : " locked");
+                item.textContent = species.count > 0
+                    ? species.icon + " ×" + species.count.toLocaleString()
+                    : "🔒 " + species.name;
+                speciesContainer.appendChild(item);
+            }
+
             const scene = new THREE.Scene();
 
             const camera = new THREE.PerspectiveCamera(
@@ -900,15 +1003,114 @@ def render_planet():
 
             container.appendChild(renderer.domElement);
 
+            const width = 512;
+            const height = 256;
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d");
+            const image = context.createImageData(width, height);
+            const terrain = new Float32Array(width * height);
+            const vegetation = new Float32Array(width * height);
+            const lava = new Float32Array(width * height);
+
+            for (let y = 0; y < height; y++) {
+                const latitude = (0.5 - y / (height - 1)) * Math.PI;
+                const cosLatitude = Math.cos(latitude);
+                for (let x = 0; x < width; x++) {
+                    const longitude = x / (width - 1) * Math.PI * 2;
+                    const px = cosLatitude * Math.cos(longitude);
+                    const py = Math.sin(latitude);
+                    const pz = cosLatitude * Math.sin(longitude);
+                    const index = y * width + x;
+                    terrain[index] = (
+                        noise3(px * 2.4, py * 2.4, pz * 2.4, seed) * 0.56
+                        + noise3(px * 5.2, py * 5.2, pz * 5.2, seed + 31) * 0.29
+                        + noise3(px * 11, py * 11, pz * 11, seed + 79) * 0.15
+                    );
+                    vegetation[index] = noise3(
+                        px * 8 + 19,
+                        py * 8 - 7,
+                        pz * 8 + 13,
+                        seed + 131
+                    );
+                    lava[index] = noise3(
+                        px * 15 - 5,
+                        py * 15 + 11,
+                        pz * 15 + 3,
+                        seed + 197
+                    );
+                }
+            }
+
+            const sortedTerrain = Array.from(terrain).sort((a, b) => a - b);
+            const seaCoverage = clamp(state.ocean / 100, 0, 0.7);
+            const seaThreshold = seaCoverage > 0
+                ? sortedTerrain[Math.floor(seaCoverage * (sortedTerrain.length - 1))]
+                : -1;
+            const plantCount = state.species.find(
+                (species) => species.id === "plants"
+            ).count;
+            const plantCoverage = plantCount > 0
+                ? clamp(plantCount / 1000, 0, 0.75)
+                : 0;
+            const hotness = smoothstep(80, 900, state.temperature);
+            const coldRock = [46, 52, 62];
+            const hotRock = [139, 49, 31];
+            const rock = mixColor(coldRock, hotRock, hotness);
+
+            for (let index = 0; index < terrain.length; index++) {
+                let color;
+                if (terrain[index] <= seaThreshold) {
+                    const depth = clamp(
+                        (seaThreshold - terrain[index]) * 2.5,
+                        0,
+                        1
+                    );
+                    color = mixColor([48, 147, 191], [10, 52, 119], depth);
+                } else if (
+                    plantCoverage > 0
+                    && vegetation[index] >= 1 - plantCoverage
+                ) {
+                    color = mixColor(
+                        [46, 94, 55],
+                        [88, 158, 73],
+                        vegetation[index]
+                    );
+                } else {
+                    const variation = 0.78 + terrain[index] * 0.42;
+                    color = rock.map((channel) =>
+                        Math.round(channel * variation)
+                    );
+                    const lavaStrength = (
+                        smoothstep(0.66, 0.84, lava[index])
+                        * hotness
+                    );
+                    color = mixColor(color, [255, 91, 24], lavaStrength);
+                }
+
+                const offset = index * 4;
+                image.data[offset] = color[0];
+                image.data[offset + 1] = color[1];
+                image.data[offset + 2] = color[2];
+                image.data[offset + 3] = 255;
+            }
+            context.putImageData(image, 0, 0);
+
+            const surfaceTexture = new THREE.CanvasTexture(canvas);
+            surfaceTexture.colorSpace = THREE.SRGBColorSpace;
             const planet = new THREE.Mesh(
                 new THREE.SphereGeometry(1.15, 48, 32),
                 new THREE.MeshStandardMaterial({
-                    color: "__COLOR__",
-                    roughness: 0.75
+                    map: surfaceTexture,
+                    roughness: 0.82
                 })
             );
 
             planet.rotation.z = 0.15;
+            planet.rotation.y = (
+                Date.now() / 1000 * 0.18 + (seed % 6283) / 1000
+            ) % (Math.PI * 2);
             scene.add(planet);
 
             scene.add(
@@ -930,10 +1132,13 @@ def render_planet():
             const positions = [];
 
             for (let i = 0; i < 350; i++) {
+                const star = hash3(i, 17, 29, seed + 251);
+                const starY = hash3(i, 31, 7, seed + 307);
+                const starZ = hash3(i, 43, 13, seed + 367);
                 positions.push(
-                    (Math.random() - 0.5) * 18,
-                    (Math.random() - 0.5) * 10,
-                    -4 - Math.random() * 8
+                    (star - 0.5) * 18,
+                    (starY - 0.5) * 10,
+                    -4 - starZ * 8
                 );
             }
 
@@ -961,8 +1166,8 @@ def render_planet():
                     container.clientWidth, 1
                 );
 
-                renderer.setSize(width, 330);
-                camera.aspect = width / 330;
+                renderer.setSize(width, 360);
+                camera.aspect = width / 360;
                 camera.updateProjectionMatrix();
             }
 
@@ -986,7 +1191,8 @@ def render_planet():
             requestAnimationFrame(animate);
         } catch (error) {
             document.getElementById("label").textContent =
-                "3D 로딩 실패: " + error.message;
+                "3D 행성을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.";
+            console.error("GENESIS WebGL rendering failed:", error);
         }
         </script>
     </body>
@@ -994,8 +1200,8 @@ def render_planet():
     """
 
     components.html(
-        html.replace("__COLOR__", color),
-        height=330,
+        html.replace("__STATE_JSON__", state_json),
+        height=360,
         scrolling=False,
     )
 

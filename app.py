@@ -20,9 +20,12 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
-SAVE_VERSION = 4
+SAVE_VERSION = 5
 TERRAIN_GENERATION_VERSION = 1
 SIMULATION_SPEED = 1
+PRELIFE_DISCOVERY_INTERVAL_SECONDS = 60.0
+PRELIFE_DISCOVERY_REWARD = 2.0
+PRELIFE_DISCOVERY_CAPACITY = 3
 FIXED_ENVIRONMENT = {
     "solar": 100,
     "volcano": 20,
@@ -89,7 +92,7 @@ EVOLUTION_TRAITS = {
     "photosynthetic": {
         "name": "광합성형",
         "icon": "☀️",
-        "effect": "세포당 자동 에너지 생산 +0.50/초",
+        "effect": "세포당 창조 에너지 자동 생산 +0.50/초",
         "energy_per_cell": 0.5,
         "growth_multiplier": 1.0,
         "adaptive_floor": 0.0,
@@ -119,14 +122,14 @@ DISCOVERY_EVENTS = {
         "choices": {
             "mineral_vein": {
                 "label": "광물층 채집",
-                "effect": "생명 에너지 +25",
+                "effect": "창조 에너지 +25",
                 "energy": 25.0,
                 "energy_per_cell": 0.0,
                 "growth_multiplier": 1.0,
             },
             "hydrothermal_chemistry": {
                 "label": "열수 화학 반응",
-                "effect": "세포당 자동 에너지 생산 +0.20/초",
+                "effect": "세포당 창조 에너지 자동 생산 +0.20/초",
                 "energy": 0.0,
                 "energy_per_cell": 0.2,
                 "growth_multiplier": 1.0,
@@ -146,7 +149,7 @@ DISCOVERY_EVENTS = {
             },
             "metabolic_enzyme": {
                 "label": "대사 효소 추출",
-                "effect": "세포당 자동 에너지 생산 +0.25/초",
+                "effect": "세포당 창조 에너지 자동 생산 +0.25/초",
                 "energy": 0.0,
                 "energy_per_cell": 0.25,
                 "growth_multiplier": 1.0,
@@ -159,19 +162,19 @@ RESEARCH = {
     "metabolism": {
         "name": "🧬 대사 효율",
         "cost": 50.0,
-        "description": "세포의 에너지 생산량 ×2",
+        "description": "세포의 창조 에너지 생산량 ×2",
         "requires": None,
     },
     "photosynthesis": {
         "name": "☀️ 광합성 연구",
         "cost": 200.0,
-        "description": "세포의 에너지 생산량 추가 ×3",
+        "description": "세포의 창조 에너지 생산량 추가 ×3",
         "requires": "metabolism",
     },
     "multicellular": {
         "name": "🪸 다세포 조직 연구",
         "cost": 1000.0,
-        "description": "세포의 에너지 생산량 추가 ×5",
+        "description": "세포의 창조 에너지 생산량 추가 ×5",
         "requires": "photosynthesis",
     },
     "evolution_photosynthetic": {
@@ -265,8 +268,21 @@ def new_campaign_state():
     }
 
 
+def new_prelife_discovery_state():
+    return {
+        "progress_seconds": 0.0,
+        "next_id": 1,
+        "available_ids": [],
+        "claimed_total": 0,
+    }
+
+
 def ensure_campaign_state(world):
     world.setdefault("campaign", new_campaign_state())
+
+
+def ensure_prelife_discovery_state(world):
+    world.setdefault("prelife_discoveries", new_prelife_discovery_state())
 
 
 def active_evolutions(world):
@@ -290,6 +306,7 @@ if isinstance(world_state, dict):
         world_state["terrain_seed"] = secrets.randbits(32)
     if "terrain_version" not in world_state:
         world_state["terrain_version"] = TERRAIN_GENERATION_VERSION
+    ensure_prelife_discovery_state(world_state)
 
 for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
     st.session_state.pop(key, None)
@@ -375,6 +392,51 @@ st.markdown(
 def add_log(world, message):
     world["history"].append(message)
     world["history"] = world["history"][-40:]
+
+
+def advance_prelife_discoveries(world, simulated_seconds):
+    ensure_prelife_discovery_state(world)
+    if (
+        world["cells"] > 0
+        or world["temperature"] <= OCEAN_FORMATION_TEMPERATURE
+        or len(world["prelife_discoveries"]["available_ids"])
+        >= PRELIFE_DISCOVERY_CAPACITY
+    ):
+        return
+
+    discoveries = world["prelife_discoveries"]
+    discoveries["progress_seconds"] += simulated_seconds
+    while (
+        discoveries["progress_seconds"] >= PRELIFE_DISCOVERY_INTERVAL_SECONDS
+        and len(discoveries["available_ids"]) < PRELIFE_DISCOVERY_CAPACITY
+    ):
+        discoveries["progress_seconds"] -= PRELIFE_DISCOVERY_INTERVAL_SECONDS
+        discoveries["available_ids"].append(discoveries["next_id"])
+        discoveries["next_id"] += 1
+        add_log(world, "🔎 원시 지구에서 새로운 발견 지점이 준비되었습니다.")
+
+    if len(discoveries["available_ids"]) >= PRELIFE_DISCOVERY_CAPACITY:
+        discoveries["progress_seconds"] = 0.0
+
+
+def collect_prelife_discovery(discovery_id):
+    tick()
+    world = st.session_state.genesis_world
+    if world is None:
+        return
+
+    ensure_prelife_discovery_state(world)
+    discoveries = world["prelife_discoveries"]
+    if type(discovery_id) is not int or discovery_id not in discoveries["available_ids"]:
+        return
+
+    discoveries["available_ids"].remove(discovery_id)
+    discoveries["claimed_total"] += 1
+    world["energy"] += PRELIFE_DISCOVERY_REWARD
+    add_log(
+        world,
+        f"✨ 발견 지점 조사 · 창조 에너지 +{PRELIFE_DISCOVERY_REWARD:g}",
+    )
 
 
 def objective_is_complete(world, objective_id):
@@ -547,6 +609,7 @@ def export_world(world):
             "campaign": world["campaign"],
             "terrain_seed": world["terrain_seed"],
             "terrain_version": world["terrain_version"],
+            "prelife_discoveries": world["prelife_discoveries"],
         },
     }
 
@@ -556,7 +619,7 @@ def validate_save_data(data):
         raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
 
     save_version = data["save_version"]
-    if type(save_version) is not int or save_version not in (1, 2, 3, SAVE_VERSION):
+    if type(save_version) is not int or save_version not in (1, 2, 3, 4, SAVE_VERSION):
         raise ValueError("지원하지 않는 저장 파일 버전입니다.")
 
     legacy_fields = {
@@ -581,6 +644,7 @@ def validate_save_data(data):
     }
     campaign_fields = {"campaign"}
     terrain_fields = {"terrain_seed", "terrain_version"}
+    prelife_discovery_fields = {"prelife_discoveries"}
     fields = legacy_fields
     if save_version >= 2:
         fields |= biological_fields
@@ -588,6 +652,8 @@ def validate_save_data(data):
         fields |= campaign_fields
     if save_version >= 4:
         fields |= terrain_fields
+    if save_version >= 5:
+        fields |= prelife_discovery_fields
     saved_world = data["world"]
     if not isinstance(saved_world, dict) or set(saved_world) != fields:
         raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
@@ -607,7 +673,7 @@ def validate_save_data(data):
         "temperature": "온도",
         "ocean": "바다 비율",
         "years": "경과 연수",
-        "energy": "생명 에너지",
+        "energy": "창조 에너지",
         "cell_cost": "다음 세포 가격",
     }
     values = {}
@@ -886,6 +952,48 @@ def validate_save_data(data):
     ):
         raise ValueError("지원하지 않는 지형 생성 버전입니다.")
 
+    prelife_discoveries = new_prelife_discovery_state()
+    if save_version >= 5:
+        saved_discoveries = saved_world["prelife_discoveries"]
+        if (
+            not isinstance(saved_discoveries, dict)
+            or set(saved_discoveries) != set(prelife_discoveries)
+        ):
+            raise ValueError("원시 지구 발견 상태 형식이 올바르지 않습니다.")
+
+        progress_seconds = saved_discoveries["progress_seconds"]
+        next_id = saved_discoveries["next_id"]
+        available_ids = saved_discoveries["available_ids"]
+        claimed_total = saved_discoveries["claimed_total"]
+        if (
+            type(progress_seconds) not in (int, float)
+            or (
+                isinstance(progress_seconds, float)
+                and not math.isfinite(progress_seconds)
+            )
+            or not 0 <= progress_seconds < PRELIFE_DISCOVERY_INTERVAL_SECONDS
+        ):
+            raise ValueError("발견 준비 진행 시간이 올바르지 않습니다.")
+        if type(next_id) is not int or not 1 <= next_id <= 1_000_000_000_000:
+            raise ValueError("발견 지점 번호가 올바르지 않습니다.")
+        if (
+            not isinstance(available_ids, list)
+            or len(available_ids) > PRELIFE_DISCOVERY_CAPACITY
+            or any(type(item) is not int or not 1 <= item < next_id for item in available_ids)
+            or len(set(available_ids)) != len(available_ids)
+        ):
+            raise ValueError("준비된 발견 지점 목록이 올바르지 않습니다.")
+        if type(claimed_total) is not int or not 0 <= claimed_total < next_id:
+            raise ValueError("발견 보상 수령 기록이 올바르지 않습니다.")
+        if claimed_total + len(available_ids) != next_id - 1:
+            raise ValueError("발견 기회와 보상 수령 기록이 일치하지 않습니다.")
+        prelife_discoveries = {
+            "progress_seconds": float(progress_seconds),
+            "next_id": next_id,
+            "available_ids": available_ids,
+            "claimed_total": claimed_total,
+        }
+
     return {
         **values,
         "name": name,
@@ -900,6 +1008,7 @@ def validate_save_data(data):
         "campaign": campaign,
         "terrain_seed": terrain_seed,
         "terrain_version": terrain_version,
+        "prelife_discoveries": prelife_discoveries,
     }
 
 
@@ -958,6 +1067,7 @@ def load_uploaded_world():
         "campaign": saved["campaign"],
         "terrain_seed": saved["terrain_seed"],
         "terrain_version": saved["terrain_version"],
+        "prelife_discoveries": saved["prelife_discoveries"],
     }
     st.session_state.genesis_world = world
     for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
@@ -1164,6 +1274,7 @@ def tick():
         target,
         simulated_seconds,
     )
+    advance_prelife_discoveries(world, simulated_seconds)
 
     world["years"] += simulated_seconds * 1_000_000
 
@@ -1218,6 +1329,7 @@ def create_world(name):
             "campaign": new_campaign_state(),
             "terrain_seed": secrets.randbits(32),
             "terrain_version": TERRAIN_GENERATION_VERSION,
+            "prelife_discoveries": new_prelife_discovery_state(),
         }
     )
 
@@ -1347,7 +1459,7 @@ def game_panel():
     columns = st.columns(4)
 
     columns[0].metric(
-        "🌱 생명 에너지",
+        "✨ 창조 에너지",
         f"{world['energy']:,.1f}",
     )
 
@@ -1380,7 +1492,7 @@ def game_panel():
     else:
         progress = objective_progress(world, objective["id"])
         reward_text = (
-            f"완료 보상: 에너지 +{objective['reward']:.0f}"
+            f"완료 보상: 창조 에너지 +{objective['reward']:.0f}"
             if objective["reward"] > 0
             else "완료 시 첫 진화 선택이 열립니다."
         )
@@ -1413,13 +1525,61 @@ def game_panel():
             f"({'충족' if temperature_ready else '필요: 0~60°C'}) · "
             f"바다 {world['ocean']:.1f}% "
             f"({'충족' if ocean_ready else '필요: 10% 이상'}) · "
-            f"시작 에너지 {world['energy']:.1f} "
+            f"현재 창조 에너지 {world['energy']:.1f} "
             f"(세포 비용 {world['cell_cost']:.1f})"
         )
         st.progress(
             ready_conditions / 2,
             text=f"최초 세포 환경 조건 {ready_conditions}/2 충족",
         )
+
+    discoveries = world["prelife_discoveries"]
+    st.subheader("🔎 원시 지구 발견 지점")
+    st.caption(
+        "현재는 3D 표면 터치 대신 발견 카드를 제공합니다. "
+        f"카드를 눌렀을 때만 창조 에너지 +{PRELIFE_DISCOVERY_REWARD:g}를 받고, "
+        f"기회는 최대 {PRELIFE_DISCOVERY_CAPACITY}개까지 보관됩니다."
+    )
+    if discoveries["available_ids"]:
+        discovery_columns = st.columns(
+            min(len(discoveries["available_ids"]), PRELIFE_DISCOVERY_CAPACITY)
+        )
+        for column, discovery_id in zip(
+            discovery_columns,
+            discoveries["available_ids"],
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"**🪨 발견 지점 #{discovery_id}**")
+                    st.caption("시간 제한 없음 · 조사 전까지 보관")
+                    st.button(
+                        f"발견 지점 조사 · 창조 에너지 +{PRELIFE_DISCOVERY_REWARD:g}",
+                        key=f"prelife_discovery_{discovery_id}",
+                        use_container_width=True,
+                        on_click=collect_prelife_discovery,
+                        args=(discovery_id,),
+                    )
+    if (
+        world["cells"] == 0
+        and world["temperature"] > OCEAN_FORMATION_TEMPERATURE
+        and len(discoveries["available_ids"]) < PRELIFE_DISCOVERY_CAPACITY
+    ):
+        progress = (
+            discoveries["progress_seconds"]
+            / PRELIFE_DISCOVERY_INTERVAL_SECONDS
+        )
+        st.progress(
+            progress,
+            text=(
+                "다음 발견 지점 준비 중 · "
+                f"{discoveries['progress_seconds']:.0f}/"
+                f"{PRELIFE_DISCOVERY_INTERVAL_SECONDS:.0f}초"
+            ),
+        )
+    elif not discoveries["available_ids"]:
+        st.caption("냉각 중 새로운 발견 지점이 일정 간격으로 준비됩니다.")
+    elif len(discoveries["available_ids"]) >= PRELIFE_DISCOVERY_CAPACITY:
+        st.caption("발견 기회가 가득 찼습니다. 시간 제한은 없으니 준비된 지점을 조사하세요.")
 
     available_events = [
         (event_id, event)
@@ -1533,7 +1693,7 @@ def game_panel():
 
         st.write(
             f"세포 구매 가격: "
-            f"**{world['cell_cost']:,.2f} 에너지**"
+            f"**{world['cell_cost']:,.2f} 창조 에너지**"
         )
 
         st.button(
@@ -1555,7 +1715,7 @@ def game_panel():
             )
         else:
             st.caption(
-                "세포는 기본적으로 초당 에너지 1을 생산합니다. "
+                "세포는 기본적으로 초당 창조 에너지 1을 생산합니다. "
                 "추가 구매 가격은 15%씩 증가합니다."
             )
 
@@ -1593,7 +1753,7 @@ def game_panel():
                 label = (
                     "✅ 연구 완료"
                     if completed
-                    else f"연구 · 에너지 {item['cost']:,.0f}"
+                    else f"연구 · 창조 에너지 {item['cost']:,.0f}"
                 )
 
                 st.button(

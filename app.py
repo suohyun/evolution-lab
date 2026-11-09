@@ -1,7 +1,9 @@
 import json
 import math
+import secrets
 import time
 from copy import deepcopy
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -18,7 +20,8 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
-SAVE_VERSION = 3
+SAVE_VERSION = 4
+TERRAIN_GENERATION_VERSION = 1
 SIMULATION_SPEED = 1
 FIXED_ENVIRONMENT = {
     "solar": 100,
@@ -36,12 +39,24 @@ INITIAL_WORLD = {
     "volcano": 20,
     "years": 0.0,
 }
+OCEAN_FORMATION_TEMPERATURE = 80.0
+COOLING_DURATION_SECONDS = 300.0
+COOLING_TARGET_TEMPERATURE = 15.0
+COOLING_RATE = math.log(
+    (INITIAL_WORLD["temperature"] - COOLING_TARGET_TEMPERATURE)
+    / (OCEAN_FORMATION_TEMPERATURE - COOLING_TARGET_TEMPERATURE)
+) / COOLING_DURATION_SECONDS
+
+planet_component = components.declare_component(
+    "genesis_planet",
+    path=str(Path(__file__).parent / "planet_component"),
+)
 
 OBJECTIVES = (
     {
         "id": "ocean_formed",
         "title": "바다 형성",
-        "description": "바다 비율을 10%까지 높이세요.",
+        "description": "지표가 식어 80°C에 도달하면 바다가 형성되기 시작합니다.",
         "reward": 10.0,
     },
     {
@@ -271,6 +286,10 @@ if st.session_state.get("genesis_version") != VERSION:
 world_state = st.session_state.get("genesis_world")
 if isinstance(world_state, dict):
     world_state.update(FIXED_ENVIRONMENT)
+    if "terrain_seed" not in world_state:
+        world_state["terrain_seed"] = secrets.randbits(32)
+    if "terrain_version" not in world_state:
+        world_state["terrain_version"] = TERRAIN_GENERATION_VERSION
 
 for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
     st.session_state.pop(key, None)
@@ -374,7 +393,17 @@ def objective_is_complete(world, objective_id):
 
 def objective_progress(world, objective_id):
     if objective_id == "ocean_formed":
-        return min(world["ocean"] / 10, 1.0)
+        if world["ocean"] >= 10:
+            return 1.0
+        if world["temperature"] > OCEAN_FORMATION_TEMPERATURE:
+            cooling_progress = (
+                INITIAL_WORLD["temperature"] - world["temperature"]
+            ) / (
+                INITIAL_WORLD["temperature"] - OCEAN_FORMATION_TEMPERATURE
+            )
+            return min(max(cooling_progress, 0.0), 0.5)
+        ocean_progress = min(world["ocean"] / 10, 1.0)
+        return 0.5 + ocean_progress * 0.5
     if objective_id == "first_cell":
         ready = int(world["ocean"] >= 10) + int(
             0 <= world["temperature"] <= 60
@@ -510,13 +539,14 @@ def export_world(world):
             "research": world["research"],
             **FIXED_ENVIRONMENT,
             "speed": SIMULATION_SPEED,
-            "speed": SIMULATION_SPEED,
             "life_ready_logged": world["life_ready_logged"],
             "history": world["history"],
             "organisms": world["organisms"],
             "evolution_progress": world["evolution_progress"],
             "growth_progress": world["growth_progress"],
             "campaign": world["campaign"],
+            "terrain_seed": world["terrain_seed"],
+            "terrain_version": world["terrain_version"],
         },
     }
 
@@ -526,7 +556,7 @@ def validate_save_data(data):
         raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
 
     save_version = data["save_version"]
-    if type(save_version) is not int or save_version not in (1, 2, SAVE_VERSION):
+    if type(save_version) is not int or save_version not in (1, 2, 3, SAVE_VERSION):
         raise ValueError("지원하지 않는 저장 파일 버전입니다.")
 
     legacy_fields = {
@@ -550,11 +580,14 @@ def validate_save_data(data):
         "growth_progress",
     }
     campaign_fields = {"campaign"}
+    terrain_fields = {"terrain_seed", "terrain_version"}
     fields = legacy_fields
     if save_version >= 2:
         fields |= biological_fields
     if save_version >= 3:
         fields |= campaign_fields
+    if save_version >= 4:
+        fields |= terrain_fields
     saved_world = data["world"]
     if not isinstance(saved_world, dict) or set(saved_world) != fields:
         raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
@@ -835,6 +868,24 @@ def validate_save_data(data):
                 break
             campaign["completed_objectives"].append(objective["id"])
 
+    terrain_seed = (
+        saved_world["terrain_seed"]
+        if save_version >= 4
+        else secrets.randbits(32)
+    )
+    terrain_version = (
+        saved_world["terrain_version"]
+        if save_version >= 4
+        else TERRAIN_GENERATION_VERSION
+    )
+    if type(terrain_seed) is not int or not 0 <= terrain_seed <= 0xFFFFFFFF:
+        raise ValueError("지형 seed 값이 올바르지 않습니다.")
+    if (
+        type(terrain_version) is not int
+        or terrain_version != TERRAIN_GENERATION_VERSION
+    ):
+        raise ValueError("지원하지 않는 지형 생성 버전입니다.")
+
     return {
         **values,
         "name": name,
@@ -847,6 +898,8 @@ def validate_save_data(data):
         "history": history,
         **biological_state,
         "campaign": campaign,
+        "terrain_seed": terrain_seed,
+        "terrain_version": terrain_version,
     }
 
 
@@ -903,6 +956,8 @@ def load_uploaded_world():
         "evolution_progress": saved["evolution_progress"],
         "growth_progress": saved["growth_progress"],
         "campaign": saved["campaign"],
+        "terrain_seed": saved["terrain_seed"],
+        "terrain_version": saved["terrain_version"],
     }
     st.session_state.genesis_world = world
     for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
@@ -916,9 +971,19 @@ def load_uploaded_world():
 def target_temperature(world):
     # 실제 기후 공식이 아닌 게임용 모델입니다.
     return (
-        15.0
+        COOLING_TARGET_TEMPERATURE
         + (world["solar"] - 100) * 0.5
         + (world["volcano"] - 20) * 0.2
+    )
+
+
+def cool_temperature(current_temperature, target, elapsed_seconds):
+    cooled_temperature = target + (
+        current_temperature - target
+    ) * math.exp(-COOLING_RATE * elapsed_seconds)
+    return min(
+        max(cooled_temperature, min(current_temperature, target)),
+        max(current_temperature, target),
     )
 
 
@@ -1094,16 +1159,19 @@ def tick():
     target = target_temperature(world)
 
     # 시간 간격과 관계없이 목표 온도에 지수적으로 접근하고 목표를 넘지 않습니다.
-    cooling_factor = 1 - math.pow(0.9, simulated_seconds)
-
-    world["temperature"] += (
-        target - world["temperature"]
-    ) * cooling_factor
+    world["temperature"] = cool_temperature(
+        world["temperature"],
+        target,
+        simulated_seconds,
+    )
 
     world["years"] += simulated_seconds * 1_000_000
 
     # 게임용 규칙: 충분히 식으면 바다가 서서히 형성됩니다.
-    if world["temperature"] <= 80 and world["ocean"] < 70:
+    if (
+        world["temperature"] <= OCEAN_FORMATION_TEMPERATURE
+        and world["ocean"] < 70
+    ):
         previous_ocean = world["ocean"]
 
         world["ocean"] = min(
@@ -1148,6 +1216,8 @@ def create_world(name):
             ],
             **new_biological_state(),
             "campaign": new_campaign_state(),
+            "terrain_seed": secrets.randbits(32),
+            "terrain_version": TERRAIN_GENERATION_VERSION,
         }
     )
 
@@ -1236,177 +1306,15 @@ def buy_research(research_id):
 # 3D 행성
 # ==================================================
 
-# 게임 계산과 분리하여 3D 화면을 매초 다시 만들지 않습니다.
-@st.fragment(run_every="15s")
-def render_planet():
-    world = st.session_state.genesis_world
-
-    if world is None:
-        return
-
-    temperature = world["temperature"]
-
-    if temperature >= 100:
-        color = "#f97346"
-    elif temperature <= 0:
-        color = "#b7e5ff"
-    else:
-        color = "#359cfa"
-
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            html, body {
-                margin: 0;
-                overflow: hidden;
-                background: #080f1d;
-            }
-
-            #scene {
-                width: 100%;
-                height: 330px;
-            }
-
-            #label {
-                position: absolute;
-                bottom: 12px;
-                width: 100%;
-                color: #9eb8ce;
-                text-align: center;
-                font: 11px sans-serif;
-                letter-spacing: 3px;
-            }
-        </style>
-    </head>
-    <body>
-        <div id="scene"></div>
-        <div id="label">GENESIS · PLANET OBSERVATORY</div>
-
-        <script type="module">
-        try {
-            const THREE = await import(
-                "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
-            );
-
-            const container = document.getElementById("scene");
-            const scene = new THREE.Scene();
-
-            const camera = new THREE.PerspectiveCamera(
-                45, 1, 0.1, 100
-            );
-            camera.position.z = 4.4;
-
-            const renderer = new THREE.WebGLRenderer({
-                antialias: true,
-                alpha: true
-            });
-
-            renderer.setPixelRatio(
-                Math.min(window.devicePixelRatio, 2)
-            );
-
-            container.appendChild(renderer.domElement);
-
-            const planet = new THREE.Mesh(
-                new THREE.SphereGeometry(1.15, 48, 32),
-                new THREE.MeshStandardMaterial({
-                    color: "__COLOR__",
-                    roughness: 0.75
-                })
-            );
-
-            planet.rotation.z = 0.15;
-            scene.add(planet);
-
-            scene.add(
-                new THREE.AmbientLight(0xc5deff, 0.9)
-            );
-
-            const sun = new THREE.DirectionalLight(
-                0xffffff, 3
-            );
-            sun.position.set(-3, 2, 4);
-            scene.add(sun);
-
-            const rim = new THREE.DirectionalLight(
-                0x38bdf8, 1
-            );
-            rim.position.set(3, 0, -2);
-            scene.add(rim);
-
-            const positions = [];
-
-            for (let i = 0; i < 350; i++) {
-                positions.push(
-                    (Math.random() - 0.5) * 18,
-                    (Math.random() - 0.5) * 10,
-                    -4 - Math.random() * 8
-                );
-            }
-
-            const geometry = new THREE.BufferGeometry();
-
-            geometry.setAttribute(
-                "position",
-                new THREE.Float32BufferAttribute(
-                    positions, 3
-                )
-            );
-
-            scene.add(
-                new THREE.Points(
-                    geometry,
-                    new THREE.PointsMaterial({
-                        color: 0xdbeafe,
-                        size: 0.025
-                    })
-                )
-            );
-
-            function resize() {
-                const width = Math.max(
-                    container.clientWidth, 1
-                );
-
-                renderer.setSize(width, 330);
-                camera.aspect = width / 330;
-                camera.updateProjectionMatrix();
-            }
-
-            new ResizeObserver(resize).observe(container);
-            resize();
-
-            let previous = null;
-
-            function animate(time) {
-                const dt = previous === null
-                    ? 0
-                    : Math.min((time - previous) / 1000, 0.1);
-
-                previous = time;
-                planet.rotation.y += dt * 0.18;
-
-                renderer.render(scene, camera);
-                requestAnimationFrame(animate);
-            }
-
-            requestAnimationFrame(animate);
-        } catch (error) {
-            document.getElementById("label").textContent =
-                "3D 로딩 실패: " + error.message;
-        }
-        </script>
-    </body>
-    </html>
-    """
-
-    components.html(
-        html.replace("__COLOR__", color),
-        height=330,
-        scrolling=False,
+def render_planet(world):
+    planet_component(
+        terrain_seed=world["terrain_seed"],
+        terrain_version=world["terrain_version"],
+        temperature=world["temperature"],
+        ocean=world["ocean"],
+        plants=world["organisms"]["plants"],
+        key="genesis_planet_view",
+        default=None,
     )
 
 
@@ -1424,6 +1332,7 @@ def game_panel():
 
     ensure_campaign_state(world)
     reconcile_objectives(world)
+    render_planet(world)
     if world["campaign"]["celebration_pending"]:
         world["campaign"]["celebration_pending"].remove("first_life")
         st.balloons()
@@ -1478,7 +1387,18 @@ def game_panel():
         with st.container(border=True):
             st.markdown(f"### 🎯 현재 목표: {objective['title']}")
             st.caption(objective["description"])
-            st.progress(progress, text=f"진행률 {progress * 100:.0f}%")
+            if objective["id"] == "ocean_formed":
+                if world["temperature"] > OCEAN_FORMATION_TEMPERATURE:
+                    progress_label = (
+                        f"지표 냉각 중 · "
+                        f"{world['temperature']:.1f}°C → "
+                        f"{OCEAN_FORMATION_TEMPERATURE:.0f}°C"
+                    )
+                else:
+                    progress_label = f"바다 형성 중 · 바다 {world['ocean']:.1f}%"
+                st.progress(progress, text=progress_label)
+            else:
+                st.progress(progress, text=f"진행률 {progress * 100:.0f}%")
             st.caption(reward_text)
 
     render_ecosystem(world)
@@ -1826,8 +1746,6 @@ if st.session_state.genesis_world is None:
     )
 
 else:
-    # 3D 화면은 15초 간격, 게임 수치는 1초 간격으로 갱신합니다.
-    render_planet()
     game_panel()
 
     st.divider()

@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #070d18;
+      color: #dce8f4;
+      font: 13px system-ui, sans-serif;
+    }
+
+    #shell {
+      position: relative;
+      width: 100%;
+      height: 390px;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse at 50% 45%, #17283b 0%, #0b1422 45%, #070d18 78%);
+      touch-action: pan-y;
+    }
+
+    #planet {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    #reset {
+      position: absolute;
+      z-index: 2;
+      top: 12px;
+      right: 12px;
+      border: 1px solid #53677d;
+      border-radius: 8px;
+      padding: 7px 11px;
+      background: rgba(8, 17, 29, .82);
+      color: #e8f0fa;
+      cursor: pointer;
+    }
+
+    #status {
+      position: absolute;
+      bottom: 10px;
+      left: 0;
+      width: 100%;
+      color: #a9bfd2;
+      text-align: center;
+      text-shadow: 0 1px 5px #07111c;
+      pointer-events: none;
+    }
+
+    #fallback {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      text-align: center;
+      color: #c4d2e0;
+    }
+
+    #fallback-planet {
+      width: min(48vw, 190px);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 34% 30%, #a95435 0%, #603c32 35%, #262b32 72%, #111923 100%);
+      box-shadow: inset -18px -8px 26px #050912, 0 0 35px #d2592833;
+    }
+
+    @media (max-width: 600px) {
+      #shell { height: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <main id="shell">
+    <canvas id="planet" aria-label="회전 가능한 3D 행성"></canvas>
+    <button id="reset" type="button">시점 초기화</button>
+    <div id="status">GENESIS · 행성을 드래그해 관찰하세요</div>
+    <section id="fallback" role="status">
+      <div id="fallback-planet"></div>
+      <div>3D 행성을 불러오지 못했습니다. 단순화된 행성 화면을 표시합니다.</div>
+    </section>
+  </main>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module">
+    const shell = document.getElementById("shell");
+    const canvas = document.getElementById("planet");
+    const fallback = document.getElementById("fallback");
+    const fallbackPlanet = document.getElementById("fallback-planet");
+    const status = document.getElementById("status");
+    let sceneState = null;
+    let latestArgs = null;
+
+    function notifyHost(type, extra = {}) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        ...extra,
+      }, "*");
+    }
+
+    function fallbackView(error) {
+      canvas.style.display = "none";
+      fallback.style.display = "flex";
+      status.textContent = `3D 표시를 사용할 수 없습니다 (${error})`;
+      if (latestArgs) {
+        const heat = Math.max(0, Math.min(1, (latestArgs.temperature - 80) / 920));
+        const ocean = Math.max(0, Math.min(70, latestArgs.ocean)) / 70;
+        const hot = `rgb(${Math.round(45 + heat * 150)},${Math.round(47 + heat * 25)},${Math.round(52 + heat * 3)})`;
+        const water = `rgb(${Math.round(32 - ocean * 12)},${Math.round(43 + ocean * 35)},${Math.round(55 + ocean * 70)})`;
+        const surface = ocean > 0 ? water : hot;
+        fallbackPlanet.style.background =
+          `radial-gradient(circle at 34% 30%, ${hot} 0%, ${surface} 72%, #111923 100%)`;
+      }
+    }
+
+    function hash3(x, y, z, seed) {
+      let n = Math.imul(x, 374761393) + Math.imul(y, 668265263);
+      n = Math.imul(n ^ Math.imul(z, 1274126177), 2246822519) ^ seed;
+      n = Math.imul(n ^ (n >>> 13), 3266489917);
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967295 * 2 - 1;
+    }
+
+    function smooth(value) {
+      return value * value * (3 - 2 * value);
+    }
+
+    function noise3(x, y, z, seed) {
+      const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+      const fx = smooth(x - ix), fy = smooth(y - iy), fz = smooth(z - iz);
+      const a = hash3(ix, iy, iz, seed);
+      const b = hash3(ix + 1, iy, iz, seed);
+      const c = hash3(ix, iy + 1, iz, seed);
+      const d = hash3(ix + 1, iy + 1, iz, seed);
+      const e = hash3(ix, iy, iz + 1, seed);
+      const f = hash3(ix + 1, iy, iz + 1, seed);
+      const g = hash3(ix, iy + 1, iz + 1, seed);
+      const h = hash3(ix + 1, iy + 1, iz + 1, seed);
+      const low = (a + (b - a) * fx) +
+        ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
+      const high = (e + (f - e) * fx) +
+        ((g + (h - g) * fx) - (e + (f - e) * fx)) * fy;
+      return low + (high - low) * fz;
+    }
+
+    function terrainHeight(x, y, z, seed) {
+      return noise3(x * 2.1, y * 2.1, z * 2.1, seed) * 0.62
+        + noise3(x * 4.7, y * 4.7, z * 4.7, seed) * 0.27
+        + noise3(x * 9.3, y * 9.3, z * 9.3, seed) * 0.11;
+    }
+
+    function makeTerrain(THREE, seed, mobile) {
+      const columns = mobile ? 128 : 192;
+      const rows = mobile ? 64 : 96;
+      const positions = [];
+      const heights = [];
+      const indices = [];
+
+      for (let row = 0; row <= rows; row += 1) {
+        const y = 1 - 2 * row / rows;
+        const ring = Math.sqrt(Math.max(0, 1 - y * y));
+        for (let column = 0; column <= columns; column += 1) {
+          const longitude = Math.PI * 2 * column / columns;
+          const x = ring * Math.cos(longitude);
+          const z = ring * Math.sin(longitude);
+          const height = terrainHeight(x, y, z, seed);
+          const radius = 1 + height * 0.055;
+          positions.push(x * radius, y * radius, z * radius);
+          heights.push(height);
+        }
+      }
+
+      const rowWidth = columns + 1;
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const topLeft = row * rowWidth + column;
+          const topRight = topLeft + 1;
+          const bottomLeft = topLeft + rowWidth;
+          const bottomRight = bottomLeft + 1;
+          indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+        }
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      const normals = geometry.attributes.normal;
+      for (let row = 0; row <= rows; row += 1) {
+        const first = row * rowWidth;
+        const last = first + columns;
+        normals.setXYZ(last, normals.getX(first), normals.getY(first), normals.getZ(first));
+        if (row === 0 || row === rows) {
+          const poleY = row === 0 ? 1 : -1;
+          for (let column = 0; column <= columns; column += 1) {
+            normals.setXYZ(first + column, 0, poleY, 0);
+          }
+        }
+      }
+      normals.needsUpdate = true;
+      return { geometry, heights, sortedHeights: [...heights].sort((a, b) => a - b) };
+    }
+
+    function setupControls(THREE, camera, renderer, controlsModule) {
+      const controls = new controlsModule.OrbitControls(camera, renderer.domElement);
+      controls.enablePan = false;
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.07;
+      controls.minDistance = 2.1;
+      controls.maxDistance = 5.4;
+      controls.rotateSpeed = 0.55;
+      controls.zoomSpeed = 0.8;
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 0.35;
+      controls.touches = {
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN,
+      };
+      controls.addEventListener("start", () => { controls.autoRotate = false; });
+      controls.addEventListener("end", () => { controls.autoRotate = true; });
+      controls.saveState();
+      return controls;
+    }
+
+    function buildStars(THREE, seed) {
+      const values = [];
+      let state = seed >>> 0;
+      const random = () => {
+        state = (state + 0x6D2B79F5) >>> 0;
+        let value = state;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+      for (let index = 0; index < 280; index += 1) {
+        values.push(
+          (random() - 0.5) * 22,
+          (random() - 0.5) * 13,
+          -3 - random() * 12,
+        );
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+      return new THREE.Points(
+        geometry,
+        new THREE.PointsMaterial({ color: 0xdbeafe, size: 0.018, sizeAttenuation: true }),
+      );
+    }
+
+    function colorSurface(THREE, state, args) {
+      const { terrain, terrainMesh, water, plants } = state;
+      const oceanRatio = Math.max(0, Math.min(70, Number(args.ocean) || 0)) / 100;
+      const seaIndex = Math.min(
+        terrain.sortedHeights.length - 1,
+        Math.floor(oceanRatio * terrain.sortedHeights.length),
+      );
+      const seaLevel = terrain.sortedHeights[seaIndex];
+      const colors = new Float32Array(terrain.heights.length * 3);
+      const rockLow = new THREE.Color("#514a45");
+      const rockHigh = new THREE.Color("#887b67");
+      const deepRock = new THREE.Color("#252831");
+      const lava = new THREE.Color("#ba3518");
+      const glow = new THREE.Color("#ef762e");
+      const greenLow = new THREE.Color("#315d3b");
+      const greenHigh = new THREE.Color("#6c9b53");
+      const positions = terrain.geometry.attributes.position;
+      const temperature = Number(args.temperature) || 0;
+      const heat = Math.max(0, Math.min(1, (temperature - 80) / 920));
+      const plantCount = Math.max(0, Number(args.plants) || 0);
+      const vegetation = plantCount > 1 ? Math.min(0.85, 0.22 + (plantCount - 1) / 35) : 0;
+
+      for (let index = 0; index < terrain.heights.length; index += 1) {
+        const height = terrain.heights[index];
+        const elevation = Math.max(0, Math.min(1, (height - seaLevel + 0.2) / 0.55));
+        const color = height > seaLevel
+          ? rockLow.clone().lerp(rockHigh, elevation)
+          : deepRock.clone().lerp(rockLow, Math.max(0, (height + 1) * 0.35));
+
+        if (vegetation > 0 && height > seaLevel) {
+          const length = Math.hypot(
+            positions.getX(index),
+            positions.getY(index),
+            positions.getZ(index),
+          ) || 1;
+          const vegetationNoise = noise3(
+            positions.getX(index) / length * 4.5,
+            positions.getY(index) / length * 4.5,
+            positions.getZ(index) / length * 4.5,
+            args.terrain_seed,
+          );
+          if (vegetationNoise > 0.05) {
+            color.lerp(greenLow.clone().lerp(greenHigh, elevation), vegetation);
+          }
+        }
+        color.lerp(lava, heat * (0.25 + 0.45 * elevation));
+        color.lerp(glow, heat * heat * (0.12 + 0.18 * elevation));
+        colors[index * 3] = color.r;
+        colors[index * 3 + 1] = color.g;
+        colors[index * 3 + 2] = color.b;
+      }
+
+      terrain.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      terrain.geometry.attributes.color.needsUpdate = true;
+      terrainMesh.material.emissiveIntensity = heat * 0.5;
+      const waterLevel = 1 + seaLevel * 0.055 + 0.004;
+      water.scale.setScalar(waterLevel);
+      water.visible = oceanRatio > 0;
+      plants.visible = plantCount > 1;
+      state.seaLevel = seaLevel;
+    }
+
+    async function initialize() {
+      try {
+        const THREE = await import(
+          "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+        );
+        const { OrbitControls } = await import(
+          "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/OrbitControls.js"
+        );
+        const mobile = window.matchMedia("(max-width: 600px)").matches;
+        const renderer = new THREE.WebGLRenderer({
+          canvas,
+          antialias: !mobile,
+          alpha: false,
+          powerPreference: "low-power",
+        });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.75));
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+        camera.position.set(0, 0.15, 3.8);
+        scene.add(new THREE.AmbientLight(0xb9cbe1, 1.05));
+        const sunlight = new THREE.DirectionalLight(0xffe6ca, 2.2);
+        sunlight.position.set(-4, 2.5, 5);
+        scene.add(sunlight);
+
+        const initialSeed = Number(latestArgs?.terrain_seed) || 1;
+        const initialVersion = Number(latestArgs?.terrain_version) || 1;
+        const stars = buildStars(THREE, initialSeed);
+        scene.add(stars);
+        const atmosphere = new THREE.Mesh(
+          new THREE.SphereGeometry(1.075, 40, 28),
+          new THREE.MeshBasicMaterial({
+            color: 0x4ca9e8,
+            side: THREE.BackSide,
+            transparent: true,
+            opacity: 0.14,
+            depthWrite: false,
+          }),
+        );
+        scene.add(atmosphere);
+
+        const terrain = makeTerrain(
+          THREE,
+          initialSeed,
+          mobile,
+        );
+        const terrainMaterial = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          roughness: 0.94,
+          metalness: 0.02,
+        });
+        const terrainMesh = new THREE.Mesh(terrain.geometry, terrainMaterial);
+        scene.add(terrainMesh);
+
+        const water = new THREE.Mesh(
+          new THREE.SphereGeometry(1, mobile ? 48 : 64, mobile ? 32 : 48),
+          new THREE.MeshStandardMaterial({
+            color: 0x176f9d,
+            roughness: 0.42,
+            metalness: 0.04,
+            transparent: true,
+            opacity: 0.88,
+          }),
+        );
+        scene.add(water);
+        const plants = new THREE.Group();
+        scene.add(plants);
+
+        const controls = setupControls(THREE, camera, renderer, { OrbitControls });
+        let wheelResumeTimer = 0;
+        renderer.domElement.addEventListener("wheel", () => {
+          controls.autoRotate = false;
+          window.clearTimeout(wheelResumeTimer);
+          wheelResumeTimer = window.setTimeout(() => {
+            controls.autoRotate = true;
+          }, 700);
+        }, { passive: true });
+        const resize = () => {
+          const width = Math.max(shell.clientWidth, 1);
+          const height = Math.max(shell.clientHeight, 1);
+          renderer.setSize(width, height, false);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+          notifyHost("streamlit:setFrameHeight", { height });
+        };
+        const observer = new ResizeObserver(resize);
+        observer.observe(shell);
+        resize();
+
+        sceneState = {
+          THREE,
+          renderer,
+          scene,
+          camera,
+          controls,
+          terrain,
+          terrainMesh,
+          water,
+          plants,
+          observer,
+          atmosphere,
+          stars,
+          terrainSeed: initialSeed,
+          terrainVersion: initialVersion,
+        };
+        if (latestArgs) updateScene(latestArgs);
+        let previousTime = 0;
+        let frameId = 0;
+        const animate = (now) => {
+          frameId = requestAnimationFrame(animate);
+          const delta = previousTime ? Math.min((now - previousTime) / 1000, 0.1) : 0;
+          previousTime = now;
+          controls.update(delta);
+          renderer.render(scene, camera);
+        };
+        frameId = requestAnimationFrame(animate);
+
+        window.addEventListener("pagehide", () => {
+          cancelAnimationFrame(frameId);
+          window.clearTimeout(wheelResumeTimer);
+          observer.disconnect();
+          controls.dispose();
+          terrain.geometry.dispose();
+          terrainMaterial.dispose();
+          water.geometry.dispose();
+          water.material.dispose();
+          atmosphere.geometry.dispose();
+          atmosphere.material.dispose();
+          stars.geometry.dispose();
+          stars.material.dispose();
+          renderer.dispose();
+        }, { once: true });
+      } catch (error) {
+        fallbackView(error?.message || "WebGL 오류");
+      }
+    }
+
+    function updateScene(args) {
+      if (!sceneState) return;
+      const { THREE } = sceneState;
+      const seed = Number(args.terrain_seed) || 1;
+      const version = Number(args.terrain_version) || 1;
+      if (sceneState.terrainSeed !== seed || sceneState.terrainVersion !== version) {
+        const nextTerrain = makeTerrain(
+          THREE,
+          seed,
+          window.matchMedia("(max-width: 600px)").matches,
+        );
+        sceneState.terrain.geometry.dispose();
+        sceneState.terrain = nextTerrain;
+        sceneState.terrainMesh.geometry = nextTerrain.geometry;
+        sceneState.terrainSeed = seed;
+        sceneState.terrainVersion = version;
+        const nextStars = buildStars(THREE, seed);
+        const oldStars = sceneState.stars;
+        sceneState.scene.remove(oldStars);
+        oldStars.geometry.dispose();
+        oldStars.material.dispose();
+        sceneState.stars = nextStars;
+        sceneState.scene.add(nextStars);
+      }
+      colorSurface(THREE, sceneState, args);
+    }
+
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (!message || message.type !== "streamlit:render") return;
+      latestArgs = message.args;
+      if (sceneState) updateScene(latestArgs);
+      else if (fallback.style.display === "flex") fallbackView("외부 모듈 또는 WebGL 오류");
+    });
+
+    document.getElementById("reset").addEventListener("click", () => {
+      if (!sceneState) return;
+      sceneState.controls.reset();
+    });
+    notifyHost("streamlit:componentReady", { apiVersion: 1 });
+    initialize();
+  </script>
+</body>
+</html>

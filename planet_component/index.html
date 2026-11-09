@@ -36,12 +36,24 @@
       z-index: 2;
       top: 12px;
       right: 12px;
-      border: 1px solid #53677d;
+      max-width: calc(100% - 24px);
+      border: 1px solid #64748B;
       border-radius: 8px;
       padding: 7px 11px;
-      background: rgba(8, 17, 29, .82);
-      color: #e8f0fa;
+      background: #15263B;
+      color: #F1F5F9;
       cursor: pointer;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
+
+    #reset:hover,
+    #reset:focus-visible {
+      border-color: #5EEAD4;
+      background: #243D58;
+      color: #FFFFFF;
+      outline: none;
     }
 
     #status {

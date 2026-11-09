@@ -376,8 +376,71 @@ st.markdown(
         color: #edf5ff;
     }
 
-    .stButton > button {
+    .stButton > button,
+    .stDownloadButton > button {
+        min-height: 2.75rem;
+        height: auto;
+        padding: 0.55rem 0.8rem;
         border-radius: 10px;
+        border: 1px solid #64748B !important;
+        background-color: #15263B !important;
+        color: #F1F5F9 !important;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.35;
+    }
+
+    .stButton > button div[data-testid="stMarkdownContainer"],
+    .stButton > button div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton > button div[data-testid="stMarkdownContainer"],
+    .stDownloadButton > button div[data-testid="stMarkdownContainer"] p {
+        color: inherit !important;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .stButton > button[kind="primary"] {
+        border-color: #5EEAD4 !important;
+        background-color: #115E59 !important;
+        color: #FFFFFF !important;
+    }
+
+    .stButton > button:hover,
+    .stButton > button:focus-visible,
+    .stDownloadButton > button:hover,
+    .stDownloadButton > button:focus-visible {
+        border-color: #5EEAD4 !important;
+        background-color: #243D58 !important;
+        color: #FFFFFF !important;
+    }
+
+    .stButton > button[kind="primary"]:hover,
+    .stButton > button[kind="primary"]:focus-visible {
+        background-color: #0F766E !important;
+    }
+
+    .stButton > button:disabled,
+    .stDownloadButton > button:disabled {
+        border-color: #475569 !important;
+        background-color: #1E293B !important;
+        color: #94A3B8 !important;
+        opacity: 1;
+    }
+
+    .genesis-selected-choice {
+        min-height: 2.75rem;
+        padding: 0.7rem 0.85rem;
+        border: 1px solid #5EEAD4;
+        border-radius: 10px;
+        background: #115E59;
+        color: #FFFFFF;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+    }
+
+    .genesis-selected-choice__label {
+        color: #FFFFFF;
+        font-weight: 700;
     }
     </style>
     """,
@@ -1587,6 +1650,25 @@ def game_panel():
         if discovery_is_available(world, event_id)
         and world["campaign"]["discovery_choices"][event_id] is None
     ]
+    for event_id, event in DISCOVERY_EVENTS.items():
+        selected_choice_id = world["campaign"]["discovery_choices"][event_id]
+        if selected_choice_id is None:
+            continue
+        selected_choice = event["choices"][selected_choice_id]
+        with st.container(border=True):
+            st.subheader(f"🔎 발견 이벤트: {event['title']}")
+            st.markdown(
+                f"""
+                <div class="genesis-selected-choice">
+                  <span class="genesis-selected-choice__label">
+                    ✓ 선택됨 · {selected_choice['label']}
+                  </span><br>
+                  {selected_choice['effect']}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
     for event_id, event in available_events:
         with st.container(border=True):
             st.subheader(f"🔎 발견 이벤트: {event['title']}")
@@ -1629,6 +1711,23 @@ def game_panel():
                         on_click=choose_evolution,
                         args=(evolution_id,),
                     )
+    elif world["campaign"]["first_evolution"] is not None:
+        selected_trait = EVOLUTION_TRAITS[
+            world["campaign"]["first_evolution"]
+        ]
+        with st.container(border=True):
+            st.subheader("🧬 선택한 첫 진화 방향")
+            st.markdown(
+                f"""
+                <div class="genesis-selected-choice">
+                  <span class="genesis-selected-choice__label">
+                    ✓ 선택됨 · {selected_trait['icon']} {selected_trait['name']}
+                  </span><br>
+                  {selected_trait['effect']}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     st.subheader("🧬 생물 단계")
     st.caption(

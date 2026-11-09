@@ -19,6 +19,11 @@ st.set_page_config(
 
 VERSION = "genesis-idle-1"
 SAVE_VERSION = 2
+SIMULATION_SPEED = 1
+FIXED_ENVIRONMENT = {
+    "solar": 100,
+    "volcano": 20,
+}
 
 INITIAL_WORLD = {
     "temperature": 1000.0,
@@ -116,12 +121,12 @@ if st.session_state.get("genesis_version") != VERSION:
     st.session_state.genesis_version = VERSION
     st.session_state.genesis_world = None
 
-    for key in (
-        "genesis_speed",
-        "genesis_solar",
-        "genesis_volcano",
-    ):
-        st.session_state.pop(key, None)
+world_state = st.session_state.get("genesis_world")
+if isinstance(world_state, dict):
+    world_state.update(FIXED_ENVIRONMENT)
+
+for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
+    st.session_state.pop(key, None)
 
 
 # ==================================================
@@ -206,7 +211,7 @@ def add_log(world, message):
     world["history"] = world["history"][-40:]
 
 
-def export_world(world, speed):
+def export_world(world):
     ensure_biological_state(world)
     return {
         "save_version": SAVE_VERSION,
@@ -219,9 +224,8 @@ def export_world(world, speed):
             "cells": world["cells"],
             "cell_cost": world["cell_cost"],
             "research": world["research"],
-            "solar": world["solar"],
-            "volcano": world["volcano"],
-            "speed": speed,
+            **FIXED_ENVIRONMENT,
+            "speed": SIMULATION_SPEED,
             "life_ready_logged": world["life_ready_logged"],
             "history": world["history"],
             "organisms": world["organisms"],
@@ -343,12 +347,15 @@ def validate_save_data(data):
         organisms = saved_world["organisms"]
         evolution_progress = saved_world["evolution_progress"]
         growth_progress = saved_world["growth_progress"]
-        for field, values in (
+        for field, biological_values in (
             ("organisms", organisms),
             ("evolution_progress", evolution_progress),
             ("growth_progress", growth_progress),
         ):
-            if not isinstance(values, dict) or set(values) != set(SPECIES):
+            if (
+                not isinstance(biological_values, dict)
+                or set(biological_values) != set(SPECIES)
+            ):
                 raise ValueError("생물 상태 저장 형식이 올바르지 않습니다.")
 
         for species_id, species in SPECIES.items():
@@ -461,8 +468,7 @@ def load_uploaded_world():
         "cells": saved["cells"],
         "cell_cost": saved["cell_cost"],
         "research": saved["research"],
-        "solar": saved["solar"],
-        "volcano": saved["volcano"],
+        **FIXED_ENVIRONMENT,
         "last_tick": time.monotonic(),
         "life_ready_logged": saved["life_ready_logged"],
         "history": saved["history"],
@@ -471,9 +477,8 @@ def load_uploaded_world():
         "growth_progress": saved["growth_progress"],
     }
     st.session_state.genesis_world = world
-    st.session_state.genesis_speed = saved["speed"]
-    st.session_state.genesis_solar = saved["solar"]
-    st.session_state.genesis_volcano = saved["volcano"]
+    for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
+        st.session_state.pop(key, None)
     st.session_state.confirm_reset = False
     st.session_state.genesis_save_message = "저장 파일을 불러왔습니다."
     st.session_state.genesis_save_error = False
@@ -640,8 +645,8 @@ def tick():
     elapsed = min(max(now - world["last_tick"], 0.0), 5.0)
     world["last_tick"] = now
 
-    speed = float(st.session_state.get("genesis_speed", 1))
-    simulated_seconds = elapsed * speed
+    world.update(FIXED_ENVIRONMENT)
+    simulated_seconds = elapsed
 
     if simulated_seconds <= 0:
         return
@@ -653,12 +658,8 @@ def tick():
 
     target = target_temperature(world)
 
-    # ×1에서 1초마다 온도 차이가 약 10% 줄어듭니다.
-    # 배속이 높아도 과도하게 목표 온도를 넘어가지 않습니다.
-    cooling_factor = 1 - math.pow(
-        0.9,
-        simulated_seconds,
-    )
+    # 시간 간격과 관계없이 목표 온도에 지수적으로 접근하고 목표를 넘지 않습니다.
+    cooling_factor = 1 - math.pow(0.9, simulated_seconds)
 
     world["temperature"] += (
         target - world["temperature"]
@@ -714,9 +715,8 @@ def create_world(name):
     )
 
     st.session_state.genesis_world = world
-    st.session_state.genesis_speed = 1
-    st.session_state.genesis_solar = 100
-    st.session_state.genesis_volcano = 20
+    for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
+        st.session_state.pop(key, None)
     st.session_state.confirm_reset = False
 
 
@@ -724,15 +724,6 @@ def restart_world():
     world = st.session_state.genesis_world
     if world is not None:
         create_world(world["name"])
-
-
-def change_environment():
-    # 변경 전 환경으로 직전까지의 시간을 먼저 계산합니다.
-    tick()
-
-    world = st.session_state.genesis_world
-    world["solar"] = st.session_state.genesis_solar
-    world["volcano"] = st.session_state.genesis_volcano
 
 
 def buy_cell():
@@ -990,12 +981,9 @@ def game_panel():
         f"{world['cells']:,}",
     )
 
-    speed = st.session_state.genesis_speed
-    actual_rate = production_rate(world) * speed
-
     columns[2].metric(
         "⚡ 현재 생산 / 현실 초",
-        f"{actual_rate:,.1f}",
+        f"{production_rate(world) * SIMULATION_SPEED:,.1f}",
     )
 
     columns[3].metric(
@@ -1025,7 +1013,7 @@ def game_panel():
     st.caption(
         "생물 단계는 실제 진화 계통도를 정밀하게 재현한 것이 아닌 게임용 규칙입니다. "
         "육지가 존재하는 조건은 바다 비율 100% 미만으로 계산합니다. "
-        "해금과 증식 시간은 배속이 반영된 시뮬레이션 초입니다."
+        "해금과 증식은 실제 경과 시간에 따라 진행됩니다."
     )
     biology_columns = st.columns(5)
     for column, (species_id, species) in zip(
@@ -1058,103 +1046,66 @@ def game_panel():
                         ),
                     )
 
-    st.write("")
-    environment, evolution = st.columns([1, 1.35])
+    st.caption("▶ 자동 진행 중 · 고정 속도 ×1 · 실제 경과 시간 기준")
 
-    # ---------- 환경 제어 ----------
-    with environment:
-        with st.container(border=True):
-            st.subheader("⚡ 신의 제어판")
+    st.subheader("🌍 환경 상태")
+    environment_columns = st.columns(3)
+    environment_columns[0].metric(
+        "🌡️ 목표 온도",
+        f"{target_temperature(world):.1f} °C",
+    )
+    environment_columns[1].metric(
+        "🌊 바다 비율",
+        f"{world['ocean']:.1f}%",
+    )
+    environment_columns[2].metric(
+        "🌿 환경 생산 배율",
+        f"×{habitat_factor(world):.2f}",
+    )
+    st.caption(
+        "태양 에너지 100 · 화산 활동 20 고정. "
+        "생산 최적 온도는 0~50°C이며, 환경이 나빠져도 현재 버전에서는 세포가 죽지 않습니다."
+    )
 
-            st.select_slider(
-                "시간 배속",
-                options=[0, 1, 5, 20],
-                format_func=lambda value: (
-                    "⏸ 일시정지"
-                    if value == 0
-                    else f"×{value}"
-                ),
-                key="genesis_speed",
-            )
+    with st.container(border=True):
+        st.subheader("🧬 생명과 진화")
 
+        st.write(
+            f"세포 구매 가격: "
+            f"**{world['cell_cost']:,.2f} 에너지**"
+        )
+
+        st.button(
+            "🦠 세포 생성",
+            key="buy_cell_button",
+            type="primary",
+            use_container_width=True,
+            disabled=(
+                not can_create_cell(world)
+                or world["energy"] < world["cell_cost"]
+            ),
+            on_click=buy_cell,
+        )
+
+        if not can_create_cell(world):
             st.caption(
-                "×1에서 현실 1초 ≈ 게임 속 100만 년. "
-                "배속은 환경 변화와 자원 생산에 함께 적용됩니다."
+                "생성 조건: 바다 10% 이상, 온도 0~60°C. "
+                "지구가 식고 바다가 형성되면 자동으로 생성할 수 있습니다."
             )
-
-            st.slider(
-                "☀️ 태양 에너지",
-                min_value=0,
-                max_value=200,
-                step=5,
-                key="genesis_solar",
-                on_change=change_environment,
-            )
-
-            st.slider(
-                "🌋 화산 활동",
-                min_value=0,
-                max_value=100,
-                step=5,
-                key="genesis_volcano",
-                on_change=change_environment,
-            )
-
-            st.write(
-                "환경의 목표 온도: "
-                f"**{target_temperature(world):.1f} °C**"
-            )
-
-            st.write(
-                f"🌊 바다 비율: **{world['ocean']:.1f}%**"
-            )
-
-            st.write(
-                "🌿 환경 생산 배율: "
-                f"**×{habitat_factor(world):.2f}**"
-            )
-
+        else:
             st.caption(
-                "생산 최적 온도는 0~50°C입니다. "
-                "환경이 나빠져도 현재 버전에서는 세포가 죽지 않습니다."
+                "세포는 기본적으로 초당 에너지 1을 생산합니다. "
+                "추가 구매 가격은 15%씩 증가합니다."
             )
 
-    # ---------- 진화와 연구 ----------
-    with evolution:
-        with st.container(border=True):
-            st.subheader("🧬 생명과 진화")
+        st.divider()
 
-            st.write(
-                f"세포 구매 가격: "
-                f"**{world['cell_cost']:,.2f} 에너지**"
-            )
-
-            st.button(
-                "🦠 세포 생성",
-                key="buy_cell_button",
-                type="primary",
-                use_container_width=True,
-                disabled=(
-                    not can_create_cell(world)
-                    or world["energy"] < world["cell_cost"]
-                ),
-                on_click=buy_cell,
-            )
-
-            if not can_create_cell(world):
-                st.caption(
-                    "생성 조건: 바다 10% 이상, 온도 0~60°C. "
-                    "환경을 조절하고 기다려 주세요."
-                )
-            else:
-                st.caption(
-                    "세포는 기본적으로 초당 에너지 1을 생산합니다. "
-                    "추가 구매 가격은 15%씩 증가합니다."
-                )
-
-            st.divider()
-
-            for research_id, item in RESEARCH.items():
+        research_columns = st.columns(len(RESEARCH))
+        for column, (research_id, item) in zip(
+            research_columns,
+            RESEARCH.items(),
+        ):
+            with column:
                 completed = research_id in world["research"]
                 required = item["requires"]
 
@@ -1193,7 +1144,7 @@ def game_panel():
             st.write(event)
 
     save_json = json.dumps(
-        export_world(world, st.session_state.genesis_speed),
+        export_world(world),
         ensure_ascii=False,
         indent=2,
         allow_nan=False,

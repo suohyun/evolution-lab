@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
-SAVE_VERSION = 2
+SAVE_VERSION = 3
 SIMULATION_SPEED = 1
 FIXED_ENVIRONMENT = {
     "solar": 100,
@@ -35,6 +35,109 @@ INITIAL_WORLD = {
     "solar": 100,
     "volcano": 20,
     "years": 0.0,
+}
+
+OBJECTIVES = (
+    {
+        "id": "ocean_formed",
+        "title": "바다 형성",
+        "description": "바다 비율을 10%까지 높이세요.",
+        "reward": 10.0,
+    },
+    {
+        "id": "first_cell",
+        "title": "최초 세포",
+        "description": "적합한 환경에서 세포를 하나 만드세요.",
+        "reward": 15.0,
+    },
+    {
+        "id": "five_cells",
+        "title": "세포 군집",
+        "description": "세포를 5개 모아 진화 선택을 준비하세요.",
+        "reward": 0.0,
+    },
+    {
+        "id": "first_evolution",
+        "title": "첫 진화 선택",
+        "description": "다음 진화 방향을 하나 선택하세요.",
+        "reward": 20.0,
+    },
+    {
+        "id": "first_life",
+        "title": "첫 생명 발견",
+        "description": "첫 광합성 생물이 등장하도록 기다리세요.",
+        "reward": 30.0,
+    },
+)
+
+EVOLUTION_TRAITS = {
+    "photosynthetic": {
+        "name": "광합성형",
+        "icon": "☀️",
+        "effect": "세포당 자동 에너지 생산 +0.50/초",
+        "energy_per_cell": 0.5,
+        "growth_multiplier": 1.0,
+        "adaptive_floor": 0.0,
+    },
+    "proliferative": {
+        "name": "증식형",
+        "icon": "🧫",
+        "effect": "모든 생물의 자동 증식 속도 ×1.50",
+        "energy_per_cell": 0.0,
+        "growth_multiplier": 1.5,
+        "adaptive_floor": 0.0,
+    },
+    "adaptive": {
+        "name": "적응형",
+        "icon": "🛡️",
+        "effect": "불리한 환경에서도 세포 생산 배율 최소 ×0.25",
+        "energy_per_cell": 0.0,
+        "growth_multiplier": 1.0,
+        "adaptive_floor": 0.25,
+    },
+}
+
+DISCOVERY_EVENTS = {
+    "ocean_formation": {
+        "title": "심해의 첫 발견",
+        "trigger": "바다 비율 10% 달성",
+        "choices": {
+            "mineral_vein": {
+                "label": "광물층 채집",
+                "effect": "생명 에너지 +25",
+                "energy": 25.0,
+                "energy_per_cell": 0.0,
+                "growth_multiplier": 1.0,
+            },
+            "hydrothermal_chemistry": {
+                "label": "열수 화학 반응",
+                "effect": "세포당 자동 에너지 생산 +0.20/초",
+                "energy": 0.0,
+                "energy_per_cell": 0.2,
+                "growth_multiplier": 1.0,
+            },
+        },
+    },
+    "first_life": {
+        "title": "광합성 생물의 흔적",
+        "trigger": "광합성 생물 최초 등장",
+        "choices": {
+            "gene_archive": {
+                "label": "유전자 보관",
+                "effect": "생물 자동 증식 속도 ×1.25",
+                "energy": 0.0,
+                "energy_per_cell": 0.0,
+                "growth_multiplier": 1.25,
+            },
+            "metabolic_enzyme": {
+                "label": "대사 효소 추출",
+                "effect": "세포당 자동 에너지 생산 +0.25/초",
+                "energy": 0.0,
+                "energy_per_cell": 0.25,
+                "growth_multiplier": 1.0,
+            },
+        },
+    },
 }
 
 RESEARCH = {
@@ -55,6 +158,24 @@ RESEARCH = {
         "cost": 1000.0,
         "description": "세포의 에너지 생산량 추가 ×5",
         "requires": "photosynthesis",
+    },
+    "evolution_photosynthetic": {
+        "name": "☀️ 광합성형 유전자 해독",
+        "cost": 350.0,
+        "description": EVOLUTION_TRAITS["photosynthetic"]["effect"],
+        "requires": "multicellular",
+    },
+    "evolution_proliferative": {
+        "name": "🧫 증식형 유전자 해독",
+        "cost": 350.0,
+        "description": EVOLUTION_TRAITS["proliferative"]["effect"],
+        "requires": "multicellular",
+    },
+    "evolution_adaptive": {
+        "name": "🛡️ 적응형 유전자 해독",
+        "cost": 350.0,
+        "description": EVOLUTION_TRAITS["adaptive"]["effect"],
+        "requires": "multicellular",
     },
 }
 
@@ -114,6 +235,32 @@ def ensure_biological_state(world):
     defaults = new_biological_state()
     for field, values in defaults.items():
         world.setdefault(field, values)
+
+
+def new_campaign_state():
+    return {
+        "completed_objectives": [],
+        "discovery_choices": {
+            event_id: None for event_id in DISCOVERY_EVENTS
+        },
+        "first_evolution": None,
+        "researched_evolutions": [],
+        "celebrated": [],
+        "celebration_pending": [],
+    }
+
+
+def ensure_campaign_state(world):
+    world.setdefault("campaign", new_campaign_state())
+
+
+def active_evolutions(world):
+    ensure_campaign_state(world)
+    campaign = world["campaign"]
+    active = set(campaign["researched_evolutions"])
+    if campaign["first_evolution"] is not None:
+        active.add(campaign["first_evolution"])
+    return active
 
 
 # 이전 버전에서 남은 상태와 충돌하지 않도록 초기화합니다.
@@ -211,7 +358,144 @@ def add_log(world, message):
     world["history"] = world["history"][-40:]
 
 
+def objective_is_complete(world, objective_id):
+    if objective_id == "ocean_formed":
+        return world["ocean"] >= 10
+    if objective_id == "first_cell":
+        return world["cells"] >= 1
+    if objective_id == "five_cells":
+        return world["cells"] >= 5
+    if objective_id == "first_evolution":
+        return world["campaign"]["first_evolution"] is not None
+    if objective_id == "first_life":
+        return world["organisms"]["photosynthetic"] > 0
+    return False
+
+
+def objective_progress(world, objective_id):
+    if objective_id == "ocean_formed":
+        return min(world["ocean"] / 10, 1.0)
+    if objective_id == "first_cell":
+        ready = int(world["ocean"] >= 10) + int(
+            0 <= world["temperature"] <= 60
+        )
+        return 1.0 if world["cells"] else ready / 2
+    if objective_id == "five_cells":
+        return min(world["cells"] / 5, 1.0)
+    if objective_id == "first_evolution":
+        return 1.0 if world["campaign"]["first_evolution"] else 0.0
+    if objective_id == "first_life":
+        return min(world["evolution_progress"]["photosynthetic"] / 30, 1.0)
+    return 0.0
+
+
+def reconcile_objectives(world):
+    ensure_campaign_state(world)
+    completed = world["campaign"]["completed_objectives"]
+    for objective in OBJECTIVES:
+        objective_id = objective["id"]
+        if objective_id in completed:
+            continue
+        if not objective_is_complete(world, objective_id):
+            break
+
+        completed.append(objective_id)
+        world["energy"] += objective["reward"]
+        add_log(world, f"🎯 목표 완료: {objective['title']}")
+
+        if objective_id == "first_life":
+            campaign = world["campaign"]
+            if "first_life" not in campaign["celebrated"]:
+                campaign["celebrated"].append("first_life")
+                campaign["celebration_pending"].append("first_life")
+
+
+def discovery_is_available(world, event_id):
+    if event_id == "ocean_formation":
+        return world["ocean"] >= 10
+    if event_id == "first_life":
+        return world["organisms"]["photosynthetic"] > 0
+    return False
+
+
+def choose_discovery(event_id, choice_id):
+    tick()
+    world = st.session_state.genesis_world
+    if world is None:
+        return
+    ensure_campaign_state(world)
+    event = DISCOVERY_EVENTS.get(event_id)
+    if (
+        event is None
+        or choice_id not in event["choices"]
+        or not discovery_is_available(world, event_id)
+        or world["campaign"]["discovery_choices"][event_id] is not None
+    ):
+        return
+
+    choice = event["choices"][choice_id]
+    world["campaign"]["discovery_choices"][event_id] = choice_id
+    world["energy"] += choice["energy"]
+    add_log(
+        world,
+        f"🔎 발견 선택: {event['title']} · {choice['label']}",
+    )
+    reconcile_objectives(world)
+
+
+def choose_evolution(evolution_id):
+    tick()
+    world = st.session_state.genesis_world
+    if world is None:
+        return
+    ensure_campaign_state(world)
+    if (
+        evolution_id not in EVOLUTION_TRAITS
+        or world["cells"] < 5
+        or world["campaign"]["first_evolution"] is not None
+    ):
+        return
+
+    world["campaign"]["first_evolution"] = evolution_id
+    trait = EVOLUTION_TRAITS[evolution_id]
+    add_log(world, f"🧬 첫 진화 방향 선택: {trait['name']}")
+    reconcile_objectives(world)
+
+
+def evolution_effects(world):
+    effects = {
+        "energy_per_cell": 0.0,
+        "growth_multiplier": 1.0,
+        "adaptive_floor": 0.0,
+    }
+
+    for evolution_id in active_evolutions(world):
+        trait = EVOLUTION_TRAITS[evolution_id]
+        effects["energy_per_cell"] += trait["energy_per_cell"]
+        effects["growth_multiplier"] *= trait["growth_multiplier"]
+        effects["adaptive_floor"] = max(
+            effects["adaptive_floor"],
+            trait["adaptive_floor"],
+        )
+
+    campaign = world["campaign"]
+    event_choices = (
+        ("ocean_formation", "mineral_vein"),
+        ("ocean_formation", "hydrothermal_chemistry"),
+        ("first_life", "gene_archive"),
+        ("first_life", "metabolic_enzyme"),
+    )
+    for event_id, choice_id in event_choices:
+        if campaign["discovery_choices"][event_id] == choice_id:
+            choice = DISCOVERY_EVENTS[event_id]["choices"][choice_id]
+            effects["energy_per_cell"] += choice["energy_per_cell"]
+            effects["growth_multiplier"] *= choice["growth_multiplier"]
+
+    return effects
+
+
 def export_world(world):
+    ensure_campaign_state(world)
     ensure_biological_state(world)
     return {
         "save_version": SAVE_VERSION,
@@ -226,11 +510,13 @@ def export_world(world):
             "research": world["research"],
             **FIXED_ENVIRONMENT,
             "speed": SIMULATION_SPEED,
+            "speed": SIMULATION_SPEED,
             "life_ready_logged": world["life_ready_logged"],
             "history": world["history"],
             "organisms": world["organisms"],
             "evolution_progress": world["evolution_progress"],
             "growth_progress": world["growth_progress"],
+            "campaign": world["campaign"],
         },
     }
 
@@ -240,7 +526,7 @@ def validate_save_data(data):
         raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
 
     save_version = data["save_version"]
-    if type(save_version) is not int or save_version not in (1, SAVE_VERSION):
+    if type(save_version) is not int or save_version not in (1, 2, SAVE_VERSION):
         raise ValueError("지원하지 않는 저장 파일 버전입니다.")
 
     legacy_fields = {
@@ -263,11 +549,12 @@ def validate_save_data(data):
         "evolution_progress",
         "growth_progress",
     }
-    fields = (
-        legacy_fields | biological_fields
-        if save_version >= 2
-        else legacy_fields
-    )
+    campaign_fields = {"campaign"}
+    fields = legacy_fields
+    if save_version >= 2:
+        fields |= biological_fields
+    if save_version >= 3:
+        fields |= campaign_fields
     saved_world = data["world"]
     if not isinstance(saved_world, dict) or set(saved_world) != fields:
         raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
@@ -409,6 +696,145 @@ def validate_save_data(data):
         ):
             raise ValueError("육상 동물 해금 조건이 충족되지 않은 저장 파일입니다.")
 
+    campaign = new_campaign_state()
+    if save_version >= 3:
+        saved_campaign = saved_world["campaign"]
+        if (
+            not isinstance(saved_campaign, dict)
+            or set(saved_campaign) != set(campaign)
+        ):
+            raise ValueError("목표와 발견 기록 형식이 올바르지 않습니다.")
+
+        completed_objectives = saved_campaign["completed_objectives"]
+        objective_ids = {objective["id"] for objective in OBJECTIVES}
+        if (
+            not isinstance(completed_objectives, list)
+            or any(
+                not isinstance(objective_id, str)
+                or objective_id not in objective_ids
+                for objective_id in completed_objectives
+            )
+            or len(set(completed_objectives)) != len(completed_objectives)
+        ):
+            raise ValueError("완료 목표 목록이 올바르지 않습니다.")
+
+        discovery_choices = saved_campaign["discovery_choices"]
+        if (
+            not isinstance(discovery_choices, dict)
+            or set(discovery_choices) != set(DISCOVERY_EVENTS)
+        ):
+            raise ValueError("발견 선택 기록이 올바르지 않습니다.")
+        for event_id, event in DISCOVERY_EVENTS.items():
+            choice = discovery_choices[event_id]
+            if choice is not None and (
+                not isinstance(choice, str)
+                or choice not in event["choices"]
+            ):
+                raise ValueError("알 수 없는 발견 보상이 포함되어 있습니다.")
+            if choice is not None and not (
+                values["ocean"] >= 10
+                if event_id == "ocean_formation"
+                else biological_state["organisms"]["photosynthetic"] > 0
+            ):
+                raise ValueError("발견 조건을 만족하지 않은 이벤트가 선택되었습니다.")
+
+        first_evolution = saved_campaign["first_evolution"]
+        if first_evolution is not None and (
+            not isinstance(first_evolution, str)
+            or first_evolution not in EVOLUTION_TRAITS
+        ):
+            raise ValueError("첫 진화 선택이 올바르지 않습니다.")
+        if first_evolution is not None and cells < 5:
+            raise ValueError("세포 5개 이전에는 진화 선택을 할 수 없습니다.")
+
+        researched_evolutions = saved_campaign["researched_evolutions"]
+        research_to_evolution = {
+            f"evolution_{evolution_id}": evolution_id
+            for evolution_id in EVOLUTION_TRAITS
+        }
+        if (
+            not isinstance(researched_evolutions, list)
+            or any(
+                not isinstance(evolution_id, str)
+                or evolution_id not in EVOLUTION_TRAITS
+                for evolution_id in researched_evolutions
+            )
+            or len(set(researched_evolutions)) != len(researched_evolutions)
+        ):
+            raise ValueError("후속 진화 연구 기록이 올바르지 않습니다.")
+        if any(
+            research_id in research
+            and evolution_id not in researched_evolutions
+            for research_id, evolution_id in research_to_evolution.items()
+        ):
+            raise ValueError("진화 연구 목록과 완료 연구가 일치하지 않습니다.")
+        if {
+            evolution_id
+            for research_id, evolution_id in research_to_evolution.items()
+            if research_id in research
+        } != set(researched_evolutions):
+            raise ValueError("후속 진화 연구 기록과 연구 목록이 일치하지 않습니다.")
+        if researched_evolutions and first_evolution is None:
+            raise ValueError("첫 진화 선택 이전에는 후속 진화를 연구할 수 없습니다.")
+        if first_evolution in researched_evolutions:
+            raise ValueError("이미 선택한 진화는 후속 연구로 다시 해금할 수 없습니다.")
+        if any(
+            f"evolution_{evolution_id}" in research
+            and first_evolution is None
+            for evolution_id in EVOLUTION_TRAITS
+        ):
+            raise ValueError("첫 진화 선택 이전에는 후속 진화를 연구할 수 없습니다.")
+
+        for field in ("celebrated", "celebration_pending"):
+            celebration_values = saved_campaign[field]
+            if (
+                not isinstance(celebration_values, list)
+                or any(value != "first_life" for value in celebration_values)
+                or len(set(celebration_values)) != len(celebration_values)
+            ):
+                raise ValueError("발견 연출 기록이 올바르지 않습니다.")
+        if not set(saved_campaign["celebration_pending"]).issubset(
+            saved_campaign["celebrated"]
+        ):
+            raise ValueError("대기 중인 연출 기록이 올바르지 않습니다.")
+        if "first_life" in saved_campaign["celebrated"] and not biological_state[
+            "organisms"
+        ]["photosynthetic"]:
+            raise ValueError("생명 발견 연출은 생물이 등장한 뒤에만 기록할 수 있습니다.")
+
+        campaign = {
+            "completed_objectives": completed_objectives,
+            "discovery_choices": discovery_choices,
+            "first_evolution": first_evolution,
+            "researched_evolutions": researched_evolutions,
+            "celebrated": saved_campaign["celebrated"],
+            "celebration_pending": saved_campaign["celebration_pending"],
+        }
+        saved_state = {
+            **values,
+            "cells": cells,
+            **biological_state,
+            "campaign": campaign,
+        }
+        expected_completed = []
+        for objective in OBJECTIVES:
+            if not objective_is_complete(saved_state, objective["id"]):
+                break
+            expected_completed.append(objective["id"])
+        if completed_objectives != expected_completed:
+            raise ValueError("완료 목표와 현재 진행 상태가 일치하지 않습니다.")
+    else:
+        legacy_state = {
+            **values,
+            "cells": cells,
+            **biological_state,
+            "campaign": campaign,
+        }
+        for objective in OBJECTIVES:
+            if not objective_is_complete(legacy_state, objective["id"]):
+                break
+            campaign["completed_objectives"].append(objective["id"])
+
     return {
         **values,
         "name": name,
@@ -420,6 +846,7 @@ def validate_save_data(data):
         "life_ready_logged": life_ready_logged,
         "history": history,
         **biological_state,
+        "campaign": campaign,
     }
 
 
@@ -475,6 +902,7 @@ def load_uploaded_world():
         "organisms": saved["organisms"],
         "evolution_progress": saved["evolution_progress"],
         "growth_progress": saved["growth_progress"],
+        "campaign": saved["campaign"],
     }
     st.session_state.genesis_world = world
     for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
@@ -482,6 +910,7 @@ def load_uploaded_world():
     st.session_state.confirm_reset = False
     st.session_state.genesis_save_message = "저장 파일을 불러왔습니다."
     st.session_state.genesis_save_error = False
+    reconcile_objectives(world)
 
 
 def target_temperature(world):
@@ -498,19 +927,20 @@ def habitat_factor(world):
     temperature = world["temperature"]
 
     if world["ocean"] < 10:
-        return 0.0
+        factor = 0.0
+    elif 0 <= temperature <= 50:
+        factor = 1.0
+    elif -20 <= temperature <= 80:
+        factor = 0.25
+    else:
+        factor = 0.05
 
-    if 0 <= temperature <= 50:
-        return 1.0
-
-    if -20 <= temperature <= 80:
-        return 0.25
-
-    return 0.05
+    return max(factor, evolution_effects(world)["adaptive_floor"])
 
 
 def production_rate(world):
     multiplier = 1.0
+    effects = evolution_effects(world)
 
     if "metabolism" in world["research"]:
         multiplier *= 2
@@ -524,6 +954,7 @@ def production_rate(world):
     return (
         world["cells"]
         * multiplier
+        * (1.0 + effects["energy_per_cell"])
         * habitat_factor(world)
     )
 
@@ -601,7 +1032,9 @@ def advance_biology(world, simulated_seconds, conditions=None):
 
         growth = (
             world["growth_progress"][species_id]
-            + species["growth_per_second"] * simulated_seconds
+            + species["growth_per_second"]
+            * evolution_effects(world)["growth_multiplier"]
+            * simulated_seconds
         )
         increase = int(growth)
         world["organisms"][species_id] = min(
@@ -639,6 +1072,7 @@ def tick():
         return
 
     ensure_biological_state(world)
+    ensure_campaign_state(world)
     now = time.monotonic()
 
     # 긴 연결 중단을 오프라인 보상으로 계산하지 않습니다.
@@ -646,6 +1080,7 @@ def tick():
     world["last_tick"] = now
 
     world.update(FIXED_ENVIRONMENT)
+    reconcile_objectives(world)
     simulated_seconds = elapsed
 
     if simulated_seconds <= 0:
@@ -691,6 +1126,7 @@ def tick():
     )
 
     advance_biology(world, simulated_seconds, biology_conditions)
+    reconcile_objectives(world)
 
     if can_create_cell(world) and not world["life_ready_logged"]:
         world["life_ready_logged"] = True
@@ -711,6 +1147,7 @@ def create_world(name):
                 "🌍 원시 지구 상태로 세계가 탄생했습니다."
             ],
             **new_biological_state(),
+            "campaign": new_campaign_state(),
         }
     )
 
@@ -729,6 +1166,8 @@ def restart_world():
 def buy_cell():
     tick()
     world = st.session_state.genesis_world
+    if world is None:
+        return
 
     if not can_create_cell(world):
         return
@@ -745,12 +1184,18 @@ def buy_cell():
 
     if world["cells"] == 1:
         add_log(world, "🦠 최초의 세포가 탄생했습니다.")
+    reconcile_objectives(world)
 
 
 def buy_research(research_id):
     tick()
     world = st.session_state.genesis_world
+    if world is None:
+        return
+    if research_id not in RESEARCH:
+        return
     item = RESEARCH[research_id]
+    ensure_campaign_state(world)
 
     if research_id in world["research"]:
         return
@@ -760,16 +1205,31 @@ def buy_research(research_id):
     if required and required not in world["research"]:
         return
 
+    evolution_id = (
+        research_id[len("evolution_"):]
+        if research_id.startswith("evolution_")
+        else None
+    )
+    if research_id.startswith("evolution_") and (
+        world["campaign"]["first_evolution"] is None
+        or evolution_id == world["campaign"]["first_evolution"]
+        or evolution_id in world["campaign"]["researched_evolutions"]
+    ):
+        return
+
     if world["cells"] < 1 or world["energy"] < item["cost"]:
         return
 
     world["energy"] -= item["cost"]
     world["research"].append(research_id)
+    if research_id.startswith("evolution_"):
+        world["campaign"]["researched_evolutions"].append(evolution_id)
 
     add_log(
         world,
         f"🔬 {item['name']} 완료",
     )
+    reconcile_objectives(world)
 
 
 # ==================================================
@@ -962,6 +1422,12 @@ def game_panel():
     if world is None:
         return
 
+    ensure_campaign_state(world)
+    reconcile_objectives(world)
+    if world["campaign"]["celebration_pending"]:
+        world["campaign"]["celebration_pending"].remove("first_life")
+        st.balloons()
+
     st.subheader(f"🌍 {world['name']}")
 
     st.caption(
@@ -991,6 +1457,32 @@ def game_panel():
         f"{world['temperature']:,.1f} °C",
     )
 
+    objective = next(
+        (
+            item
+            for item in OBJECTIVES
+            if item["id"]
+            not in world["campaign"]["completed_objectives"]
+        ),
+        None,
+    )
+    if objective is None:
+        st.success("🎉 첫 진화 장을 완료했습니다. 생태계와 연구를 계속 발전시키세요.")
+    else:
+        progress = objective_progress(world, objective["id"])
+        reward_text = (
+            f"완료 보상: 에너지 +{objective['reward']:.0f}"
+            if objective["reward"] > 0
+            else "완료 시 첫 진화 선택이 열립니다."
+        )
+        with st.container(border=True):
+            st.markdown(f"### 🎯 현재 목표: {objective['title']}")
+            st.caption(objective["description"])
+            st.progress(progress, text=f"진행률 {progress * 100:.0f}%")
+            st.caption(reward_text)
+
+    render_ecosystem(world)
+
     if world["cells"] == 0:
         temperature_ready = 0 <= world["temperature"] <= 60
         ocean_ready = world["ocean"] >= 10
@@ -1008,6 +1500,55 @@ def game_panel():
             ready_conditions / 2,
             text=f"최초 세포 환경 조건 {ready_conditions}/2 충족",
         )
+
+    available_events = [
+        (event_id, event)
+        for event_id, event in DISCOVERY_EVENTS.items()
+        if discovery_is_available(world, event_id)
+        and world["campaign"]["discovery_choices"][event_id] is None
+    ]
+    for event_id, event in available_events:
+        with st.container(border=True):
+            st.subheader(f"🔎 발견 이벤트: {event['title']}")
+            st.caption(f"발견 조건: {event['trigger']} · 시간 제한 없음")
+            choice_columns = st.columns(len(event["choices"]))
+            for column, (choice_id, choice) in zip(
+                choice_columns,
+                event["choices"].items(),
+            ):
+                with column:
+                    st.markdown(f"**{choice['label']}**")
+                    st.caption(choice["effect"])
+                    st.button(
+                        "선택",
+                        key=f"discovery_{event_id}_{choice_id}",
+                        use_container_width=True,
+                        on_click=choose_discovery,
+                        args=(event_id, choice_id),
+                    )
+
+    if world["cells"] >= 5 and world["campaign"]["first_evolution"] is None:
+        st.subheader("🧬 첫 진화 방향을 선택하세요")
+        st.caption(
+            "선택한 특성은 즉시 적용됩니다. 다른 두 특성은 이후 연구로 영구 해금할 수 있습니다."
+        )
+        evolution_columns = st.columns(len(EVOLUTION_TRAITS))
+        for column, (evolution_id, trait) in zip(
+            evolution_columns,
+            EVOLUTION_TRAITS.items(),
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {trait['icon']} {trait['name']}")
+                    st.caption(trait["effect"])
+                    st.button(
+                        f"{trait['name']} 선택",
+                        key=f"evolution_choice_{evolution_id}",
+                        type="primary",
+                        use_container_width=True,
+                        on_click=choose_evolution,
+                        args=(evolution_id,),
+                    )
 
     st.subheader("🧬 생물 단계")
     st.caption(
@@ -1100,11 +1641,9 @@ def game_panel():
 
         st.divider()
 
-        research_columns = st.columns(len(RESEARCH))
-        for column, (research_id, item) in zip(
-            research_columns,
-            RESEARCH.items(),
-        ):
+        research_columns = st.columns(3)
+        for index, (research_id, item) in enumerate(RESEARCH.items()):
+            column = research_columns[index % len(research_columns)]
             with column:
                 completed = research_id in world["research"]
                 required = item["requires"]
@@ -1113,6 +1652,20 @@ def game_panel():
                     required is None
                     or required in world["research"]
                 )
+                evolution_id = (
+                    research_id[len("evolution_"):]
+                    if research_id.startswith("evolution_")
+                    else None
+                )
+                if evolution_id is not None:
+                    unlocked = (
+                        unlocked
+                        and world["campaign"]["first_evolution"] is not None
+                        and evolution_id
+                        != world["campaign"]["first_evolution"]
+                        and evolution_id
+                        not in world["campaign"]["researched_evolutions"]
+                    )
 
                 st.markdown(f"**{item['name']}**")
                 st.caption(item["description"])
@@ -1155,6 +1708,78 @@ def game_panel():
         file_name="genesis-save.json",
         mime="application/json",
         use_container_width=True,
+    )
+
+
+def render_ecosystem(world):
+    water_fill = min(max(world["ocean"] / 70 * 100, 0), 100)
+    heat = min(max((world["temperature"] - 15) / 985, 0), 1)
+    life_icons = "".join(
+        f"<span class='life'>{species['icon']}</span>"
+        for species_id, species in SPECIES.items()
+        if world["organisms"][species_id] > 0
+    )
+    if world["cells"] > 0:
+        life_icons = f"<span class='life'>🦠</span>{life_icons}"
+
+    st.markdown(
+        f"""
+        <div style="
+            margin: 0.6rem 0 1rem;
+            padding: 14px 18px;
+            border: 1px solid #29405a;
+            border-radius: 14px;
+            background: linear-gradient(110deg, #10243a, #101b2c);
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        ">
+          <div style="
+              position: relative;
+              overflow: hidden;
+              flex: 0 0 150px;
+              height: 92px;
+              border-radius: 50%;
+              border: 2px solid #6c8499;
+              background: linear-gradient(
+                  180deg,
+                  hsl(15, 42%, {22 + heat * 18:.0f}%),
+                  hsl(25, 55%, {15 + heat * 14:.0f}%)
+              );
+              box-shadow: 0 0 20px rgba(49, 142, 194, 0.18);
+          ">
+            <div style="
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                height: {water_fill:.1f}%;
+                min-height: {3 if world['ocean'] > 0 else 0}px;
+                background: linear-gradient(180deg, #55c5d9, #1470ae 75%, #16477b);
+                transition: height 0.8s ease;
+                opacity: 0.94;
+            "></div>
+            <div style="
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 5px;
+                font-size: 19px;
+                text-shadow: 0 1px 5px #07111c;
+            ">{life_icons}</div>
+          </div>
+          <div style="color: #d7e5f3; line-height: 1.8;">
+            <strong>행성 생태계</strong><br>
+            바다 형성 {world['ocean']:.1f}% · 지표 {world['temperature']:.1f}°C<br>
+            {("첫 생명이 행성에 자리 잡았습니다." if life_icons else
+              "세포가 탄생하면 생태계에 생명이 나타납니다." if world["ocean"] >= 10 else
+              "바다가 형성되면 행성 표면이 변합니다.")}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 

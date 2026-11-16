@@ -21,12 +21,33 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
-SAVE_VERSION = 6
+SAVE_VERSION = 7
+WATER_MODEL_VERSION = 1
 TERRAIN_GENERATION_VERSION = 1
 SIMULATION_SPEED = 1
 PRELIFE_DISCOVERY_INTERVAL_SECONDS = 60.0
 PRELIFE_DISCOVERY_REWARD = 2.0
 PRELIFE_DISCOVERY_CAPACITY = 3
+PLANET_AREA_M2 = 5.10072e14
+PLANET_GRAVITY_M_S2 = 9.80665
+DRY_AIR_REFERENCE_PRESSURE_PA = 101325.0
+DRY_AIR_COLUMN_MASS_KG = (
+    DRY_AIR_REFERENCE_PRESSURE_PA * PLANET_AREA_M2 / PLANET_GRAVITY_M_S2
+)
+SCENARIO_TOTAL_WATER_KG = 1.337e21
+WATER_RAIN_TIMESCALE_SECONDS = 120.0
+WATER_SCENARIO_ID = "earth-scale-modern-ocean-water-1bar-dry-air"
+WATER_TRIPLE_POINT_K = 273.16
+WATER_CRITICAL_POINT_K = 647.096
+WATER_CRITICAL_PRESSURE_PA = 22.064e6
+IAPWS_SATURATION_COEFFICIENTS = (
+    (-7.85951783, 1.0),
+    (1.84408259, 1.5),
+    (-11.7866497, 3.0),
+    (22.6807411, 3.5),
+    (-15.9618719, 4.0),
+    (1.80122502, 7.5),
+)
 FIXED_ENVIRONMENT = {
     "solar": 100,
     "volcano": 20,
@@ -43,12 +64,12 @@ INITIAL_WORLD = {
     "volcano": 20,
     "years": 0.0,
 }
-OCEAN_FORMATION_TEMPERATURE = 80.0
+COOLING_REFERENCE_TEMPERATURE_C = 80.0
 COOLING_DURATION_SECONDS = 300.0
 COOLING_TARGET_TEMPERATURE = 15.0
 COOLING_RATE = math.log(
     (INITIAL_WORLD["temperature"] - COOLING_TARGET_TEMPERATURE)
-    / (OCEAN_FORMATION_TEMPERATURE - COOLING_TARGET_TEMPERATURE)
+    / (COOLING_REFERENCE_TEMPERATURE_C - COOLING_TARGET_TEMPERATURE)
 ) / COOLING_DURATION_SECONDS
 
 planet_component = components.declare_component(
@@ -60,7 +81,7 @@ OBJECTIVES = (
     {
         "id": "ocean_formed",
         "title": "바다 형성",
-        "description": "지표가 식어 80°C에 도달하면 바다가 형성되기 시작합니다.",
+        "description": "응결된 물이 강수로 지표에 축적되어 바다 표시 비율 10%에 도달하세요.",
         "reward": 10.0,
     },
     {
@@ -329,6 +350,46 @@ def new_prelife_discovery_state():
     }
 
 
+def new_water_model_state():
+    return {
+        "version": WATER_MODEL_VERSION,
+        "scenario_id": WATER_SCENARIO_ID,
+        "planet_area_m2": PLANET_AREA_M2,
+        "gravity_m_s2": PLANET_GRAVITY_M_S2,
+        "dry_air_mass_kg": DRY_AIR_COLUMN_MASS_KG,
+        "total_water_kg": SCENARIO_TOTAL_WATER_KG,
+        "atmospheric_water_kg": SCENARIO_TOTAL_WATER_KG,
+        "cloud_water_kg": 0.0,
+        "surface_water_kg": 0.0,
+        "rain_timescale_seconds": WATER_RAIN_TIMESCALE_SECONDS,
+    }
+
+
+def update_ocean_coverage(world):
+    water = world["water_model"]
+    world["ocean"] = min(
+        70.0,
+        max(0.0, water["surface_water_kg"] / water["total_water_kg"] * 70.0),
+    )
+
+
+def migrate_live_water_model(world):
+    if "water_model" in world:
+        update_ocean_coverage(world)
+        return
+
+    water = new_water_model_state()
+    legacy_ocean = min(70.0, max(0.0, float(world.get("ocean", 0.0))))
+    water["surface_water_kg"] = (
+        legacy_ocean / 70.0 * water["total_water_kg"]
+    )
+    water["atmospheric_water_kg"] = (
+        water["total_water_kg"] - water["surface_water_kg"]
+    )
+    world["water_model"] = water
+    update_ocean_coverage(world)
+
+
 def new_creature_discovery_state():
     return {
         "discovered": [],
@@ -389,6 +450,7 @@ if isinstance(world_state, dict):
         world_state["terrain_version"] = TERRAIN_GENERATION_VERSION
     ensure_prelife_discovery_state(world_state)
     migrate_live_creature_discoveries(world_state)
+    migrate_live_water_model(world_state)
 
 for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
     st.session_state.pop(key, None)
@@ -628,7 +690,7 @@ def advance_prelife_discoveries(world, simulated_seconds):
     ensure_prelife_discovery_state(world)
     if (
         world["cells"] > 0
-        or world["temperature"] <= OCEAN_FORMATION_TEMPERATURE
+        or world["temperature"] <= COOLING_REFERENCE_TEMPERATURE_C
         or len(world["prelife_discoveries"]["available_ids"])
         >= PRELIFE_DISCOVERY_CAPACITY
     ):
@@ -685,17 +747,7 @@ def objective_is_complete(world, objective_id):
 
 def objective_progress(world, objective_id):
     if objective_id == "ocean_formed":
-        if world["ocean"] >= 10:
-            return 1.0
-        if world["temperature"] > OCEAN_FORMATION_TEMPERATURE:
-            cooling_progress = (
-                INITIAL_WORLD["temperature"] - world["temperature"]
-            ) / (
-                INITIAL_WORLD["temperature"] - OCEAN_FORMATION_TEMPERATURE
-            )
-            return min(max(cooling_progress, 0.0), 0.5)
-        ocean_progress = min(world["ocean"] / 10, 1.0)
-        return 0.5 + ocean_progress * 0.5
+        return min(max(world["ocean"] / 10, 0.0), 1.0)
     if objective_id == "first_cell":
         ready = int(world["ocean"] >= 10) + int(
             0 <= world["temperature"] <= 60
@@ -819,6 +871,7 @@ def export_world(world):
     ensure_campaign_state(world)
     ensure_biological_state(world)
     migrate_live_creature_discoveries(world)
+    migrate_live_water_model(world)
     return {
         "save_version": SAVE_VERSION,
         "world": {
@@ -842,6 +895,7 @@ def export_world(world):
             "terrain_version": world["terrain_version"],
             "prelife_discoveries": world["prelife_discoveries"],
             "creature_discoveries": world["creature_discoveries"],
+            "water_model": world["water_model"],
         },
     }
 
@@ -851,7 +905,9 @@ def validate_save_data(data):
         raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
 
     save_version = data["save_version"]
-    if type(save_version) is not int or save_version not in (1, 2, 3, 4, 5, SAVE_VERSION):
+    if type(save_version) is not int or save_version not in (
+        1, 2, 3, 4, 5, 6, SAVE_VERSION
+    ):
         raise ValueError("지원하지 않는 저장 파일 버전입니다.")
 
     legacy_fields = {
@@ -878,6 +934,7 @@ def validate_save_data(data):
     terrain_fields = {"terrain_seed", "terrain_version"}
     prelife_discovery_fields = {"prelife_discoveries"}
     creature_discovery_fields = {"creature_discoveries"}
+    water_model_fields = {"water_model"}
     fields = legacy_fields
     if save_version >= 2:
         fields |= biological_fields
@@ -889,6 +946,8 @@ def validate_save_data(data):
         fields |= prelife_discovery_fields
     if save_version >= 6:
         fields |= creature_discovery_fields
+    if save_version >= 7:
+        fields |= water_model_fields
     saved_world = data["world"]
     if not isinstance(saved_world, dict) or set(saved_world) != fields:
         raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
@@ -1303,6 +1362,87 @@ def validate_save_data(data):
                 creature_discoveries["discovered"].append(creature_id)
                 creature_discoveries["seen"].append(creature_id)
 
+    water_model = new_water_model_state()
+    if save_version >= 7:
+        saved_water = saved_world["water_model"]
+        if (
+            not isinstance(saved_water, dict)
+            or set(saved_water) != set(water_model)
+            or type(saved_water["version"]) is not int
+            or saved_water["version"] != WATER_MODEL_VERSION
+            or saved_water["scenario_id"] != WATER_SCENARIO_ID
+        ):
+            raise ValueError("물 순환 모델 또는 시나리오 버전이 올바르지 않습니다.")
+
+        scenario_ranges = {
+            "planet_area_m2": (1e10, 1e16),
+            "gravity_m_s2": (0.1, 100.0),
+            "dry_air_mass_kg": (1e10, 1e25),
+            "total_water_kg": (1e10, 1e25),
+            "rain_timescale_seconds": (0.1, 1e8),
+        }
+        scenario_parameters = {}
+        for field, (minimum, maximum) in scenario_ranges.items():
+            value = saved_water[field]
+            if (
+                type(value) not in (int, float)
+                or not minimum <= value <= maximum
+                or (isinstance(value, float) and not math.isfinite(value))
+            ):
+                raise ValueError(f"물 순환 시나리오의 {field} 값이 올바르지 않습니다.")
+            scenario_parameters[field] = float(value)
+
+        implied_dry_pressure = (
+            scenario_parameters["gravity_m_s2"]
+            * scenario_parameters["dry_air_mass_kg"]
+            / scenario_parameters["planet_area_m2"]
+        )
+        if not math.isclose(
+            implied_dry_pressure,
+            DRY_AIR_REFERENCE_PRESSURE_PA,
+            rel_tol=1e-9,
+        ):
+            raise ValueError("건조 대기 질량과 기준 압력이 일치하지 않습니다.")
+
+        mass_fields = (
+            "atmospheric_water_kg",
+            "cloud_water_kg",
+            "surface_water_kg",
+        )
+        for field in mass_fields:
+            value = saved_water[field]
+            if (
+                type(value) not in (int, float)
+                or (isinstance(value, float) and not math.isfinite(value))
+                or value < 0
+                or value > scenario_parameters["total_water_kg"]
+            ):
+                raise ValueError("물 저장량은 0 이상이며 시나리오 총량 이하여야 합니다.")
+
+        water_total = sum(saved_water[field] for field in mass_fields)
+        if not math.isclose(
+            water_total,
+            scenario_parameters["total_water_kg"],
+            rel_tol=1e-12,
+        ):
+            raise ValueError("대기·구름·지표의 물 질량 합이 보존되지 않았습니다.")
+        expected_ocean = min(
+            70.0,
+            saved_water["surface_water_kg"]
+            / scenario_parameters["total_water_kg"]
+            * 70.0,
+        )
+        if not math.isclose(values["ocean"], expected_ocean, abs_tol=1e-6):
+            raise ValueError("바다 비율과 지표 물 저장량이 일치하지 않습니다.")
+        water_model = saved_water
+    else:
+        water_model["surface_water_kg"] = (
+            values["ocean"] / 70.0 * SCENARIO_TOTAL_WATER_KG
+        )
+        water_model["atmospheric_water_kg"] = (
+            SCENARIO_TOTAL_WATER_KG - water_model["surface_water_kg"]
+        )
+
     return {
         **values,
         "name": name,
@@ -1319,6 +1459,7 @@ def validate_save_data(data):
         "terrain_version": terrain_version,
         "prelife_discoveries": prelife_discoveries,
         "creature_discoveries": creature_discoveries,
+        "water_model": water_model,
     }
 
 
@@ -1379,6 +1520,7 @@ def load_uploaded_world():
         "terrain_version": saved["terrain_version"],
         "prelife_discoveries": saved["prelife_discoveries"],
         "creature_discoveries": saved["creature_discoveries"],
+        "water_model": saved["water_model"],
     }
     st.session_state.genesis_world = world
     for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
@@ -1396,6 +1538,91 @@ def target_temperature(world):
         + (world["solar"] - 100) * 0.5
         + (world["volcano"] - 20) * 0.2
     )
+
+
+def saturation_vapor_pressure_pa(temperature_c):
+    """IAPWS SR1-86(1992); valid from water's triple to critical point."""
+    temperature_k = temperature_c + 273.15
+    if not (
+        WATER_TRIPLE_POINT_K - 1e-9
+        <= temperature_k
+        <= WATER_CRITICAL_POINT_K + 1e-9
+    ):
+        return None
+    temperature_k = min(
+        WATER_CRITICAL_POINT_K,
+        max(WATER_TRIPLE_POINT_K, temperature_k),
+    )
+
+    theta = 1.0 - temperature_k / WATER_CRITICAL_POINT_K
+    summation = sum(
+        coefficient * theta**exponent
+        for coefficient, exponent in IAPWS_SATURATION_COEFFICIENTS
+    )
+    return WATER_CRITICAL_PRESSURE_PA * math.exp(
+        WATER_CRITICAL_POINT_K / temperature_k * summation
+    )
+
+
+def water_pressure_state(world):
+    """Hydrostatic column pressures under the scenario's constant-gravity assumption."""
+    water = world["water_model"]
+    area = water["planet_area_m2"]
+    gravity = water["gravity_m_s2"]
+    vapor_pressure = gravity * water["atmospheric_water_kg"] / area
+    total_pressure = gravity * (
+        water["dry_air_mass_kg"]
+        + water["atmospheric_water_kg"]
+        + water["cloud_water_kg"]
+    ) / area
+    return total_pressure, vapor_pressure
+
+
+def advance_water_phases(world, elapsed_seconds):
+    """Advance water stores without changing total water mass."""
+    water = world["water_model"]
+    steps = max(1, math.ceil(elapsed_seconds))
+    step_seconds = elapsed_seconds / steps
+
+    for _ in range(steps):
+        saturation_pressure = saturation_vapor_pressure_pa(
+            world["temperature"]
+        )
+        if saturation_pressure is not None:
+            maximum_vapor_mass = min(
+                saturation_pressure
+                * water["planet_area_m2"]
+                / water["gravity_m_s2"],
+                water["total_water_kg"] - water["surface_water_kg"],
+            )
+            if water["atmospheric_water_kg"] > maximum_vapor_mass:
+                condensed = (
+                    water["atmospheric_water_kg"] - maximum_vapor_mass
+                )
+                water["atmospheric_water_kg"] -= condensed
+                water["cloud_water_kg"] += condensed
+            else:
+                evaporated = min(
+                    maximum_vapor_mass - water["atmospheric_water_kg"],
+                    water["cloud_water_kg"] + water["surface_water_kg"],
+                )
+                from_cloud = min(water["cloud_water_kg"], evaporated)
+                water["cloud_water_kg"] -= from_cloud
+                from_surface = evaporated - from_cloud
+                water["surface_water_kg"] -= from_surface
+                water["atmospheric_water_kg"] += evaporated
+
+            rain_fraction = -math.expm1(
+                -step_seconds / water["rain_timescale_seconds"]
+            )
+            rainfall = water["cloud_water_kg"] * rain_fraction
+            water["cloud_water_kg"] -= rainfall
+            water["surface_water_kg"] += rainfall
+
+    previous_ocean = world["ocean"]
+    update_ocean_coverage(world)
+    if previous_ocean < 10 <= world["ocean"]:
+        add_log(world, "🌊 강수로 지표에 물이 축적되어 바다가 형성되기 시작했습니다.")
 
 
 def cool_temperature(current_temperature, target, elapsed_seconds):
@@ -1560,6 +1787,7 @@ def tick():
 
     ensure_biological_state(world)
     ensure_campaign_state(world)
+    migrate_live_water_model(world)
     now = time.monotonic()
 
     # 긴 연결 중단을 오프라인 보상으로 계산하지 않습니다.
@@ -1580,33 +1808,20 @@ def tick():
 
     target = target_temperature(world)
 
-    # 시간 간격과 관계없이 목표 온도에 지수적으로 접근하고 목표를 넘지 않습니다.
-    world["temperature"] = cool_temperature(
-        world["temperature"],
-        target,
-        simulated_seconds,
-    )
+    # Cooling remains an exponential game-time curve; water phases are advanced
+    # in at most one-second steps to reduce sensitivity to UI tick intervals.
+    steps = max(1, math.ceil(simulated_seconds))
+    step_seconds = simulated_seconds / steps
+    for _ in range(steps):
+        world["temperature"] = cool_temperature(
+            world["temperature"],
+            target,
+            step_seconds,
+        )
+        advance_water_phases(world, step_seconds)
     advance_prelife_discoveries(world, simulated_seconds)
 
     world["years"] += simulated_seconds * 1_000_000
-
-    # 게임용 규칙: 충분히 식으면 바다가 서서히 형성됩니다.
-    if (
-        world["temperature"] <= OCEAN_FORMATION_TEMPERATURE
-        and world["ocean"] < 70
-    ):
-        previous_ocean = world["ocean"]
-
-        world["ocean"] = min(
-            70.0,
-            world["ocean"] + simulated_seconds * 2,
-        )
-
-        if previous_ocean < 10 <= world["ocean"]:
-            add_log(
-                world,
-                "🌊 바다가 형성되기 시작했습니다.",
-            )
 
     new_rate = production_rate(world)
 
@@ -1643,6 +1858,7 @@ def create_world(name):
             "terrain_version": TERRAIN_GENERATION_VERSION,
             "prelife_discoveries": new_prelife_discovery_state(),
             "creature_discoveries": new_creature_discovery_state(),
+            "water_model": new_water_model_state(),
         }
     )
 
@@ -1843,20 +2059,64 @@ def game_panel():
             st.markdown(f"### 🎯 현재 목표: {objective['title']}")
             st.caption(objective["description"])
             if objective["id"] == "ocean_formed":
-                if world["temperature"] > OCEAN_FORMATION_TEMPERATURE:
-                    progress_label = (
-                        f"지표 냉각 중 · "
-                        f"{world['temperature']:.1f}°C → "
-                        f"{OCEAN_FORMATION_TEMPERATURE:.0f}°C"
-                    )
-                else:
-                    progress_label = f"바다 형성 중 · 바다 {world['ocean']:.1f}%"
-                st.progress(progress, text=progress_label)
+                st.progress(
+                    progress,
+                    text=f"지표 액체 물 축적 · 바다 표시 비율 {world['ocean']:.1f}% / 10%",
+                )
             else:
                 st.progress(progress, text=f"진행률 {progress * 100:.0f}%")
             st.caption(reward_text)
 
     render_ecosystem(world)
+
+    total_pressure_pa, vapor_pressure_pa = water_pressure_state(world)
+    saturation_pressure_pa = saturation_vapor_pressure_pa(world["temperature"])
+    water = world["water_model"]
+    with st.expander("물 순환 물리 모델과 시나리오 가정"):
+        pressure_columns = st.columns(3)
+        pressure_columns[0].metric(
+            "대기 전체 압력",
+            f"{total_pressure_pa / 100_000:,.2f} bar",
+        )
+        pressure_columns[1].metric(
+            (
+                "대기 수증기 부분압"
+                if world["temperature"] < WATER_CRITICAL_POINT_K - 273.15
+                else "대기 H₂O 열기둥 환산압력"
+            ),
+            f"{vapor_pressure_pa / 100_000:,.2f} bar",
+        )
+        pressure_columns[2].metric(
+            "IAPWS 포화수증기압",
+            (
+                f"{saturation_pressure_pa / 100_000:,.3g} bar"
+                if saturation_pressure_pa is not None
+                else "적용 범위 밖"
+            ),
+        )
+        st.caption(
+            "시나리오 가정: 지구 반지름·중력, 건조 대기 1 bar 상당, "
+            "현대 지구 해양 질량 규모의 총 물, 시작 지표 온도 1000°C. "
+            "초기 지구의 확정값이 아닙니다. "
+            "대기와 지표 온도는 같다고 단순화하며, 0.01~373.946°C에서만 "
+            "IAPWS 액체-증기 포화선을 적용합니다."
+        )
+        st.caption(
+            "물 저장량 · 대기 H₂O "
+            f"{water['atmospheric_water_kg']:.3e} kg · 구름 응결수 "
+            f"{water['cloud_water_kg']:.3e} kg · 지표 액체수 "
+            f"{water['surface_water_kg']:.3e} kg · "
+            f"총량 {water['total_water_kg']:.3e} kg"
+        )
+        st.caption(
+            "3D 바다 비율은 지표 물 / 시나리오 총 물 × 70%로 환산한 게임 표시값입니다. "
+            "임계점 초과에서는 H₂O 압력 수치가 기체 부분압을 뜻하지 않습니다."
+        )
+        st.caption(
+            f"강수 시간척도 {water['rain_timescale_seconds']:.0f}초는 게임 설정입니다. "
+            "잠열, 연직 온도 구조, 얼음·승화, 대기 비이상성은 모델링하지 않습니다. "
+            "약 5분 냉각은 물리 상수가 아닌 게임 시간 압축 설정입니다."
+        )
 
     if world["cells"] == 0:
         temperature_ready = 0 <= world["temperature"] <= 60
@@ -1904,7 +2164,7 @@ def game_panel():
                     )
     if (
         world["cells"] == 0
-        and world["temperature"] > OCEAN_FORMATION_TEMPERATURE
+        and world["temperature"] > COOLING_REFERENCE_TEMPERATURE_C
         and len(discoveries["available_ids"]) < PRELIFE_DISCOVERY_CAPACITY
     ):
         progress = (
@@ -2012,6 +2272,7 @@ def game_panel():
     st.subheader("🧬 생물 단계")
     st.caption(
         "생물 단계는 실제 진화 계통도를 정밀하게 재현한 것이 아닌 게임용 규칙입니다. "
+        "생물 해금의 0~50°C는 생명의 보편 한계가 아닌 게임용 적합 범위입니다. "
         "육지가 존재하는 조건은 바다 비율 100% 미만으로 계산합니다. "
         "해금과 증식은 실제 경과 시간에 따라 진행됩니다."
     )

@@ -4,6 +4,7 @@ import secrets
 import time
 from copy import deepcopy
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -20,7 +21,7 @@ st.set_page_config(
 )
 
 VERSION = "genesis-idle-1"
-SAVE_VERSION = 5
+SAVE_VERSION = 6
 TERRAIN_GENERATION_VERSION = 1
 SIMULATION_SPEED = 1
 PRELIFE_DISCOVERY_INTERVAL_SECONDS = 60.0
@@ -240,6 +241,57 @@ SPECIES = {
     },
 }
 
+CREATURE_PRESENTATIONS = {
+    "first_cell": {
+        "name": "최초의 세포 — 생명의 시작",
+        "short_name": "최초의 세포",
+        "description": "깊은 바다의 어둠 속, 막과 세포질을 갖춘 첫 생명이 떠오릅니다.",
+        "effect": None,
+        "renderer": "procedural-cell",
+        "asset_path": None,
+    },
+    "photosynthetic": {
+        "name": "광합성 생물",
+        "short_name": "광합성 생물",
+        "description": "빛을 이용하는 단순한 생명 단계입니다.",
+        "effect": None,
+        "renderer": "placeholder",
+        "asset_path": None,
+    },
+    "multicellular": {
+        "name": "다세포 생물",
+        "short_name": "다세포 생물",
+        "description": "여러 세포가 함께 살아가는 생명 단계입니다.",
+        "effect": None,
+        "renderer": "placeholder",
+        "asset_path": None,
+    },
+    "plants": {
+        "name": "육상 식물",
+        "short_name": "육상 식물",
+        "description": "육지에 자리 잡기 시작한 식물 생명 단계입니다.",
+        "effect": None,
+        "renderer": "placeholder",
+        "asset_path": None,
+    },
+    "marine_animals": {
+        "name": "해양 동물",
+        "short_name": "해양 동물",
+        "description": "바다에서 활동하는 동물 생명 단계입니다.",
+        "effect": None,
+        "renderer": "placeholder",
+        "asset_path": None,
+    },
+    "land_animals": {
+        "name": "육상 동물",
+        "short_name": "육상 동물",
+        "description": "육지 환경에 적응한 동물 생명 단계입니다.",
+        "effect": None,
+        "renderer": "placeholder",
+        "asset_path": None,
+    },
+}
+
 
 def new_biological_state():
     return {
@@ -277,12 +329,41 @@ def new_prelife_discovery_state():
     }
 
 
+def new_creature_discovery_state():
+    return {
+        "discovered": [],
+        "seen": [],
+        "queue": [],
+        "next_token": 1,
+    }
+
+
 def ensure_campaign_state(world):
     world.setdefault("campaign", new_campaign_state())
 
 
 def ensure_prelife_discovery_state(world):
     world.setdefault("prelife_discoveries", new_prelife_discovery_state())
+
+
+def ensure_creature_discovery_state(world):
+    world.setdefault("creature_discoveries", new_creature_discovery_state())
+
+
+def migrate_live_creature_discoveries(world):
+    if "creature_discoveries" in world:
+        return
+
+    discoveries = new_creature_discovery_state()
+    if world.get("cells", 0) > 0:
+        discoveries["discovered"].append("first_cell")
+        discoveries["seen"].append("first_cell")
+    organisms = world.get("organisms", {})
+    for creature_id in SPECIES:
+        if organisms.get(creature_id, 0) > 0:
+            discoveries["discovered"].append(creature_id)
+            discoveries["seen"].append(creature_id)
+    world["creature_discoveries"] = discoveries
 
 
 def active_evolutions(world):
@@ -307,6 +388,7 @@ if isinstance(world_state, dict):
     if "terrain_version" not in world_state:
         world_state["terrain_version"] = TERRAIN_GENERATION_VERSION
     ensure_prelife_discovery_state(world_state)
+    migrate_live_creature_discoveries(world_state)
 
 for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
     st.session_state.pop(key, None)
@@ -455,6 +537,91 @@ st.markdown(
 def add_log(world, message):
     world["history"].append(message)
     world["history"] = world["history"][-40:]
+
+
+def register_creature_discovery(world, creature_id):
+    if creature_id not in CREATURE_PRESENTATIONS:
+        return
+
+    ensure_creature_discovery_state(world)
+    discoveries = world["creature_discoveries"]
+    if creature_id in discoveries["discovered"]:
+        return
+
+    token = discoveries["next_token"]
+    discoveries["next_token"] += 1
+    discoveries["discovered"].append(creature_id)
+    discoveries["queue"].append({"id": creature_id, "token": token})
+    add_log(
+        world,
+        f"✨ 새로운 생명 발견: {CREATURE_PRESENTATIONS[creature_id]['short_name']}",
+    )
+
+
+def creature_presentation(creature_id):
+    config = CREATURE_PRESENTATIONS.get(creature_id)
+    if config is None:
+        return None
+
+    allowed_renderers = {"procedural-cell", "placeholder", "image", "model"}
+    renderer = config.get("renderer")
+    asset_path = config.get("asset_path")
+    if renderer not in allowed_renderers:
+        renderer = "placeholder"
+    if asset_path is not None:
+        asset_suffix = (
+            PurePosixPath(asset_path).suffix.lower()
+            if isinstance(asset_path, str)
+            else ""
+        )
+        supported_asset = (
+            renderer == "model" and asset_suffix == ".glb"
+        ) or (
+            renderer == "image"
+            and asset_suffix in {".png", ".webp", ".jpg", ".jpeg"}
+        )
+        if (
+            not isinstance(asset_path, str)
+            or "\\" in asset_path
+            or ":" in asset_path
+            or PurePosixPath(asset_path).is_absolute()
+            or ".." in PurePosixPath(asset_path).parts
+            or not asset_path.startswith("assets/creatures/")
+            or not supported_asset
+        ):
+            renderer = "placeholder"
+            asset_path = None
+
+    return {
+        "id": creature_id,
+        "name": config["name"],
+        "description": config["description"],
+        "effect": config["effect"],
+        "renderer": renderer,
+        "asset_path": asset_path,
+    }
+
+
+def handle_creature_presentation_action(world, result):
+    if not isinstance(result, dict):
+        return
+
+    action = result.get("action")
+    creature_id = result.get("id")
+    token = result.get("token")
+    discoveries = world["creature_discoveries"]
+    if (
+        action not in ("complete", "skip", "close")
+        or not discoveries["queue"]
+        or type(token) is not int
+        or type(creature_id) is not str
+        or discoveries["queue"][0] != {"id": creature_id, "token": token}
+    ):
+        return
+
+    discoveries["queue"].pop(0)
+    if creature_id not in discoveries["seen"]:
+        discoveries["seen"].append(creature_id)
 
 
 def advance_prelife_discoveries(world, simulated_seconds):
@@ -651,6 +818,7 @@ def evolution_effects(world):
 def export_world(world):
     ensure_campaign_state(world)
     ensure_biological_state(world)
+    migrate_live_creature_discoveries(world)
     return {
         "save_version": SAVE_VERSION,
         "world": {
@@ -673,6 +841,7 @@ def export_world(world):
             "terrain_seed": world["terrain_seed"],
             "terrain_version": world["terrain_version"],
             "prelife_discoveries": world["prelife_discoveries"],
+            "creature_discoveries": world["creature_discoveries"],
         },
     }
 
@@ -682,7 +851,7 @@ def validate_save_data(data):
         raise ValueError("JSON 최상위 구조가 올바르지 않습니다.")
 
     save_version = data["save_version"]
-    if type(save_version) is not int or save_version not in (1, 2, 3, 4, SAVE_VERSION):
+    if type(save_version) is not int or save_version not in (1, 2, 3, 4, 5, SAVE_VERSION):
         raise ValueError("지원하지 않는 저장 파일 버전입니다.")
 
     legacy_fields = {
@@ -708,6 +877,7 @@ def validate_save_data(data):
     campaign_fields = {"campaign"}
     terrain_fields = {"terrain_seed", "terrain_version"}
     prelife_discovery_fields = {"prelife_discoveries"}
+    creature_discovery_fields = {"creature_discoveries"}
     fields = legacy_fields
     if save_version >= 2:
         fields |= biological_fields
@@ -717,6 +887,8 @@ def validate_save_data(data):
         fields |= terrain_fields
     if save_version >= 5:
         fields |= prelife_discovery_fields
+    if save_version >= 6:
+        fields |= creature_discovery_fields
     saved_world = data["world"]
     if not isinstance(saved_world, dict) or set(saved_world) != fields:
         raise ValueError("세계 정보의 항목이 올바르지 않습니다.")
@@ -1057,6 +1229,80 @@ def validate_save_data(data):
             "claimed_total": claimed_total,
         }
 
+    creature_discoveries = new_creature_discovery_state()
+    if save_version >= 6:
+        saved_creature_discoveries = saved_world["creature_discoveries"]
+        if (
+            not isinstance(saved_creature_discoveries, dict)
+            or set(saved_creature_discoveries) != set(creature_discoveries)
+        ):
+            raise ValueError("생물 도감 기록 형식이 올바르지 않습니다.")
+
+        known_creatures = set(CREATURE_PRESENTATIONS)
+        discovered = saved_creature_discoveries["discovered"]
+        seen = saved_creature_discoveries["seen"]
+        queue = saved_creature_discoveries["queue"]
+        next_token = saved_creature_discoveries["next_token"]
+        if (
+            not isinstance(discovered, list)
+            or any(not isinstance(item, str) or item not in known_creatures for item in discovered)
+            or len(set(discovered)) != len(discovered)
+        ):
+            raise ValueError("발견한 생물 목록이 올바르지 않습니다.")
+        if (
+            not isinstance(seen, list)
+            or any(not isinstance(item, str) or item not in known_creatures for item in seen)
+            or len(set(seen)) != len(seen)
+            or not set(seen).issubset(discovered)
+        ):
+            raise ValueError("관찰 완료 기록이 올바르지 않습니다.")
+        if (
+            not isinstance(queue, list)
+            or len(queue) > len(known_creatures)
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"id", "token"}
+                or not isinstance(item["id"], str)
+                or item["id"] not in known_creatures
+                or type(item["token"]) is not int
+                or item["token"] < 1
+                or item["id"] not in discovered
+                for item in queue
+            )
+            or len({item["id"] for item in queue}) != len(queue)
+            or len({item["token"] for item in queue}) != len(queue)
+        ):
+            raise ValueError("생물 발견 대기열이 올바르지 않습니다.")
+        if (
+            type(next_token) is not int
+            or next_token < 1
+            or any(item["token"] >= next_token for item in queue)
+        ):
+            raise ValueError("생물 발견 순서 값이 올바르지 않습니다.")
+        expected_discoveries = {
+            creature_id
+            for creature_id, count in biological_state["organisms"].items()
+            if count > 0
+        }
+        if cells > 0:
+            expected_discoveries.add("first_cell")
+        if not expected_discoveries.issubset(discovered):
+            raise ValueError("생물 개체 상태와 도감 기록이 일치하지 않습니다.")
+        creature_discoveries = {
+            "discovered": discovered,
+            "seen": seen,
+            "queue": queue,
+            "next_token": next_token,
+        }
+    else:
+        if cells > 0:
+            creature_discoveries["discovered"].append("first_cell")
+            creature_discoveries["seen"].append("first_cell")
+        for creature_id in SPECIES:
+            if biological_state["organisms"][creature_id] > 0:
+                creature_discoveries["discovered"].append(creature_id)
+                creature_discoveries["seen"].append(creature_id)
+
     return {
         **values,
         "name": name,
@@ -1072,6 +1318,7 @@ def validate_save_data(data):
         "terrain_seed": terrain_seed,
         "terrain_version": terrain_version,
         "prelife_discoveries": prelife_discoveries,
+        "creature_discoveries": creature_discoveries,
     }
 
 
@@ -1131,6 +1378,7 @@ def load_uploaded_world():
         "terrain_seed": saved["terrain_seed"],
         "terrain_version": saved["terrain_version"],
         "prelife_discoveries": saved["prelife_discoveries"],
+        "creature_discoveries": saved["creature_discoveries"],
     }
     st.session_state.genesis_world = world
     for key in ("genesis_speed", "genesis_solar", "genesis_volcano"):
@@ -1252,6 +1500,7 @@ def advance_biology(world, simulated_seconds, conditions=None):
         if progress >= species["unlock_seconds"]:
             world["organisms"][species_id] = 1
             world["evolution_progress"][species_id] = 0.0
+            register_creature_discovery(world, species_id)
             add_log(
                 world,
                 f"{species['icon']} {species['name']}이(가) 처음 등장했습니다.",
@@ -1393,6 +1642,7 @@ def create_world(name):
             "terrain_seed": secrets.randbits(32),
             "terrain_version": TERRAIN_GENERATION_VERSION,
             "prelife_discoveries": new_prelife_discovery_state(),
+            "creature_discoveries": new_creature_discovery_state(),
         }
     )
 
@@ -1429,7 +1679,26 @@ def buy_cell():
 
     if world["cells"] == 1:
         add_log(world, "🦠 최초의 세포가 탄생했습니다.")
+        register_creature_discovery(world, "first_cell")
     reconcile_objectives(world)
+
+
+def queue_creature_replay(creature_id):
+    world = st.session_state.genesis_world
+    if world is None:
+        return
+
+    migrate_live_creature_discoveries(world)
+    discoveries = world["creature_discoveries"]
+    if (
+        creature_id not in discoveries["discovered"]
+        or any(item["id"] == creature_id for item in discoveries["queue"])
+    ):
+        return
+
+    token = discoveries["next_token"]
+    discoveries["next_token"] += 1
+    discoveries["queue"].append({"id": creature_id, "token": token})
 
 
 def buy_research(research_id):
@@ -1482,15 +1751,27 @@ def buy_research(research_id):
 # ==================================================
 
 def render_planet(world):
-    planet_component(
+    migrate_live_creature_discoveries(world)
+    discoveries = world["creature_discoveries"]
+    active_discovery = None
+    active_queued = discoveries["queue"][0] if discoveries["queue"] else None
+    if active_queued:
+        active_discovery = creature_presentation(active_queued["id"])
+        if active_discovery is not None:
+            active_discovery["token"] = active_queued["token"]
+
+    action = planet_component(
         terrain_seed=world["terrain_seed"],
         terrain_version=world["terrain_version"],
         temperature=world["temperature"],
         ocean=world["ocean"],
         plants=world["organisms"]["plants"],
+        discovery=active_discovery,
         key="genesis_planet_view",
         default=None,
     )
+    if active_queued is not None:
+        handle_creature_presentation_action(world, action)
 
 
 # ==================================================
@@ -1509,8 +1790,7 @@ def game_panel():
     reconcile_objectives(world)
     render_planet(world)
     if world["campaign"]["celebration_pending"]:
-        world["campaign"]["celebration_pending"].remove("first_life")
-        st.balloons()
+        world["campaign"]["celebration_pending"].clear()
 
     st.subheader(f"🌍 {world['name']}")
 
@@ -1765,6 +2045,50 @@ def game_panel():
                             f"{species['unlock_seconds']:.0f}초"
                         ),
                     )
+
+    st.subheader("📖 생물 도감")
+    st.caption(
+        "발견한 생물을 선택해 관찰 장면을 다시 볼 수 있습니다. "
+        "미발견 생물은 잠겨 있으며, 일부 전용 장면은 준비 중입니다."
+    )
+    creature_discoveries = world["creature_discoveries"]
+    discovered_creatures = creature_discoveries["discovered"]
+    if discovered_creatures:
+        selected_creature = st.selectbox(
+            "관찰할 생물",
+            options=discovered_creatures,
+            format_func=lambda creature_id: CREATURE_PRESENTATIONS[
+                creature_id
+            ]["short_name"],
+            key=f"creature_catalog_selection_{world['terrain_seed']}",
+        )
+        selected_presentation = creature_presentation(selected_creature)
+        st.caption(selected_presentation["description"])
+        if selected_presentation["effect"]:
+            st.caption(f"현재 효과: {selected_presentation['effect']}")
+        else:
+            st.caption("별도의 해금 보너스는 없습니다.")
+        if selected_presentation["renderer"] != "procedural-cell":
+            st.caption("이 생물의 전용 관찰 장면은 준비 중입니다.")
+        st.button(
+            "다시 관찰",
+            key="replay_creature_discovery",
+            on_click=queue_creature_replay,
+            args=(selected_creature,),
+            disabled=any(
+                item["id"] == selected_creature
+                for item in creature_discoveries["queue"]
+            ),
+        )
+    else:
+        st.info("최초 세포가 생성되면 도감에 기록됩니다.")
+    locked_creatures = [
+        presentation["short_name"]
+        for creature_id, presentation in CREATURE_PRESENTATIONS.items()
+        if creature_id not in discovered_creatures
+    ]
+    if locked_creatures:
+        st.caption("🔒 미발견: " + " · ".join(locked_creatures))
 
     st.caption("▶ 자동 진행 중 · 고정 속도 ×1 · 실제 경과 시간 기준")
 

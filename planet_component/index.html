@@ -88,8 +88,118 @@
       box-shadow: inset -18px -8px 26px #050912, 0 0 35px #d2592833;
     }
 
+    #discovery-layer {
+      display: none;
+      position: absolute;
+      z-index: 4;
+      inset: 0;
+      box-sizing: border-box;
+      padding: 22px;
+      align-items: flex-end;
+      justify-content: center;
+      background: linear-gradient(180deg, rgba(2, 8, 15, .12), rgba(2, 8, 15, .55));
+      animation: discovery-fade-in .8s ease both;
+    }
+
+    #discovery-card {
+      width: min(100%, 620px);
+      box-sizing: border-box;
+      padding: 18px 20px;
+      border: 1px solid rgba(126, 181, 204, .45);
+      border-radius: 16px;
+      background: rgba(5, 16, 27, .94);
+      color: #E8F0FA;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+      opacity: 0;
+      transform: translateY(14px);
+      animation: discovery-card-rise .8s .25s ease forwards;
+    }
+
+    #discovery-kicker {
+      margin: 0 0 5px;
+      color: #75D6D0;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    #discovery-title {
+      margin: 0;
+      color: #F1F5F9;
+      font-size: clamp(20px, 4vw, 29px);
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    #discovery-description,
+    #discovery-effect,
+    #discovery-note {
+      margin: 10px 0 0;
+      color: #CBD5E1;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+
+    #discovery-effect:empty,
+    #discovery-note:empty { display: none; }
+
+    #discovery-progress {
+      height: 3px;
+      margin-top: 15px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: #243446;
+    }
+
+    #discovery-progress-bar {
+      width: 0;
+      height: 100%;
+      background: #5EEAD4;
+    }
+
+    #discovery-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 9px;
+      margin-top: 14px;
+    }
+
+    .discovery-action {
+      min-height: 40px;
+      border: 1px solid #64748B;
+      border-radius: 9px;
+      padding: 7px 13px;
+      background: #15263B;
+      color: #F1F5F9;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .discovery-action:hover,
+    .discovery-action:focus-visible {
+      border-color: #5EEAD4;
+      background: #243D58;
+      color: #FFFFFF;
+      outline: none;
+    }
+
+    @keyframes discovery-fade-in {
+      from { background-color: rgba(2, 8, 15, 0); }
+      to { background-color: rgba(2, 8, 15, .55); }
+    }
+
+    @keyframes discovery-card-rise {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     @media (max-width: 600px) {
       #shell { height: 320px; }
+      #discovery-layer { padding: 12px; }
+      #discovery-card { padding: 14px; }
+      #discovery-actions { justify-content: stretch; }
+      .discovery-action { flex: 1; }
     }
   </style>
 </head>
@@ -98,6 +208,20 @@
     <canvas id="planet" aria-label="회전 가능한 3D 행성"></canvas>
     <button id="reset" type="button">시점 초기화</button>
     <div id="status">GENESIS · 행성을 드래그해 관찰하세요</div>
+    <section id="discovery-layer" aria-live="polite">
+      <article id="discovery-card">
+        <p id="discovery-kicker">생명 발견</p>
+        <h2 id="discovery-title"></h2>
+        <p id="discovery-description"></p>
+        <p id="discovery-effect"></p>
+        <p id="discovery-note"></p>
+        <div id="discovery-progress"><div id="discovery-progress-bar"></div></div>
+        <div id="discovery-actions">
+          <button class="discovery-action" id="skip-discovery" type="button">건너뛰기</button>
+          <button class="discovery-action" id="close-discovery" type="button">닫기</button>
+        </div>
+      </article>
+    </section>
     <section id="fallback" role="status">
       <div id="fallback-planet"></div>
       <div>3D 행성을 불러오지 못했습니다. 단순화된 행성 화면을 표시합니다.</div>
@@ -117,8 +241,23 @@
     const fallback = document.getElementById("fallback");
     const fallbackPlanet = document.getElementById("fallback-planet");
     const status = document.getElementById("status");
+    const discoveryLayer = document.getElementById("discovery-layer");
+    const discoveryTitle = document.getElementById("discovery-title");
+    const discoveryDescription = document.getElementById("discovery-description");
+    const discoveryEffect = document.getElementById("discovery-effect");
+    const discoveryNote = document.getElementById("discovery-note");
+    const discoveryProgressBar = document.getElementById("discovery-progress-bar");
+    const skipDiscoveryButton = document.getElementById("skip-discovery");
+    const closeDiscoveryButton = document.getElementById("close-discovery");
     let sceneState = null;
     let latestArgs = null;
+    let activeDiscovery = null;
+    let lastFinishedToken = null;
+    let discoveryStartedAt = 0;
+    let lastAnimationAt = 0;
+    let originalSceneState = null;
+    let fallbackDiscoveryTimer = 0;
+    const discoveryDurationMs = 5000;
 
     function notifyHost(type, extra = {}) {
       window.parent.postMessage({
@@ -176,6 +315,137 @@
       return noise3(x * 2.1, y * 2.1, z * 2.1, seed) * 0.62
         + noise3(x * 4.7, y * 4.7, z * 4.7, seed) * 0.27
         + noise3(x * 9.3, y * 9.3, z * 9.3, seed) * 0.11;
+    }
+
+    function makeCellScene(THREE, mobile) {
+      const group = new THREE.Group();
+      group.visible = false;
+      const membraneGeometry = new THREE.SphereGeometry(0.7, mobile ? 36 : 52, mobile ? 28 : 40);
+      const membranePositions = membraneGeometry.attributes.position;
+      for (let index = 0; index < membranePositions.count; index += 1) {
+        const x = membranePositions.getX(index);
+        const y = membranePositions.getY(index);
+        const z = membranePositions.getZ(index);
+        const length = Math.hypot(x, y, z) || 1;
+        const displacement = terrainHeight(x / length, y / length, z / length, 173) * 0.045;
+        const radius = 1 + displacement;
+        membranePositions.setXYZ(index, x * radius, y * radius, z * radius);
+      }
+      membraneGeometry.computeVertexNormals();
+
+      const membrane = new THREE.Mesh(
+        membraneGeometry,
+        new THREE.MeshPhysicalMaterial({
+          color: 0x7dc7bb,
+          roughness: 0.24,
+          metalness: 0,
+          clearcoat: 0.72,
+          transparent: true,
+          opacity: 0.42,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      group.add(membrane);
+
+      const rim = new THREE.Mesh(
+        new THREE.SphereGeometry(0.716, mobile ? 36 : 52, mobile ? 28 : 40),
+        new THREE.MeshBasicMaterial({
+          color: 0x75dfcf,
+          side: THREE.BackSide,
+          transparent: true,
+          opacity: 0.16,
+          depthWrite: false,
+        }),
+      );
+      group.add(rim);
+
+      const cytoplasm = new THREE.Mesh(
+        new THREE.SphereGeometry(0.58, mobile ? 32 : 44, mobile ? 24 : 34),
+        new THREE.MeshPhysicalMaterial({
+          color: 0x497e78,
+          roughness: 0.52,
+          metalness: 0.02,
+          clearcoat: 0.18,
+          transparent: true,
+          opacity: 0.83,
+        }),
+      );
+      group.add(cytoplasm);
+
+      const vesicles = [];
+      const proceduralObjects = [membrane, rim, cytoplasm];
+      const vesicleCount = mobile ? 7 : 11;
+      for (let index = 0; index < vesicleCount; index += 1) {
+        const angle = index * 2.399963;
+        const vertical = -0.36 + ((index * 37) % vesicleCount) / vesicleCount * 0.72;
+        const radial = Math.sqrt(Math.max(0, 0.42 * 0.42 - vertical * vertical));
+        const size = 0.035 + (index % 3) * 0.009;
+        const vesicle = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(size, 1),
+          new THREE.MeshPhysicalMaterial({
+            color: index % 2 ? 0x9bc7a3 : 0xe4c58a,
+            roughness: 0.34,
+            transparent: true,
+            opacity: 0.82,
+          }),
+        );
+        vesicle.position.set(Math.cos(angle) * radial, vertical, Math.sin(angle) * radial);
+        group.add(vesicle);
+        proceduralObjects.push(vesicle);
+        vesicles.push({ mesh: vesicle, angle, vertical, radial, speed: 0.09 + (index % 4) * 0.025 });
+      }
+
+      const particleCount = mobile ? 48 : 100;
+      const particlePositions = new Float32Array(particleCount * 3);
+      const particleVelocity = [];
+      let state = 0x4a31c9;
+      const random = () => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+      for (let index = 0; index < particleCount; index += 1) {
+        particlePositions[index * 3] = (random() - 0.5) * 4.5;
+        particlePositions[index * 3 + 1] = (random() - 0.5) * 3.2;
+        particlePositions[index * 3 + 2] = -1.5 + random() * 1.8;
+        particleVelocity.push({
+          x: (random() - 0.5) * 0.035,
+          y: (random() - 0.5) * 0.025,
+          phase: random() * Math.PI * 2,
+        });
+      }
+      const particleGeometry = new THREE.BufferGeometry();
+      particleGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(particlePositions, 3),
+      );
+      const particles = new THREE.Points(
+        particleGeometry,
+        new THREE.PointsMaterial({
+          color: 0xb5d2cc,
+          size: mobile ? 0.018 : 0.023,
+          transparent: true,
+          opacity: 0.48,
+          sizeAttenuation: true,
+        }),
+      );
+      particles.visible = false;
+
+      return {
+        group,
+        proceduralObjects,
+        membrane,
+        rim,
+        cytoplasm,
+        vesicles,
+        particles,
+        particlePositions,
+        particleVelocity,
+        particleGeometry,
+        originalBackground: new THREE.Color(0x080f1d),
+        asset: null,
+        mixer: null,
+      };
     }
 
     function makeTerrain(THREE, seed, mobile) {
@@ -338,6 +608,324 @@
       state.seaLevel = seaLevel;
     }
 
+    function restorePlanetScene() {
+      window.clearTimeout(fallbackDiscoveryTimer);
+      fallbackDiscoveryTimer = 0;
+      if (!sceneState || !originalSceneState) {
+        discoveryLayer.style.display = "none";
+        discoveryProgressBar.style.width = "0%";
+        originalSceneState = null;
+        notifyHost("streamlit:setFrameHeight", { height: 390 });
+        return;
+      }
+      const { controls, camera, scene, stars, atmosphere, terrainMesh, water, cellScene } = sceneState;
+      stars.visible = originalSceneState.starsVisible;
+      atmosphere.visible = originalSceneState.atmosphereVisible;
+      terrainMesh.visible = originalSceneState.terrainVisible;
+      water.visible = originalSceneState.waterVisible;
+      cellScene.group.visible = false;
+      cellScene.particles.visible = false;
+      scene.background = originalSceneState.background;
+      camera.position.copy(originalSceneState.cameraPosition);
+      controls.target.copy(originalSceneState.controlTarget);
+      controls.enabled = true;
+      controls.autoRotate = true;
+      controls.update();
+      discoveryLayer.style.display = "none";
+      discoveryProgressBar.style.width = "0%";
+      originalSceneState = null;
+      const mobile = window.matchMedia("(max-width: 600px)").matches;
+      shell.style.height = mobile ? "320px" : "390px";
+      notifyHost("streamlit:setFrameHeight", { height: mobile ? 320 : 390 });
+    }
+
+    function finishDiscovery(action) {
+      if (!activeDiscovery) return;
+      const completed = activeDiscovery;
+      lastFinishedToken = completed.token;
+      activeDiscovery = null;
+      disposeDiscoveryAsset();
+      restorePlanetScene();
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setComponentValue",
+        value: {
+          action,
+          id: completed.id,
+          token: completed.token,
+        },
+        dataType: "json",
+      }, "*");
+    }
+
+    function syncDiscovery(discovery) {
+      if (!discovery) {
+        if (activeDiscovery) {
+          activeDiscovery = null;
+          disposeDiscoveryAsset();
+          restorePlanetScene();
+        }
+        return;
+      }
+      if (discovery.token === lastFinishedToken) return;
+      if (activeDiscovery && activeDiscovery.token === discovery.token) {
+        if (!sceneState || originalSceneState) return;
+        activeDiscovery = null;
+        disposeDiscoveryAsset();
+        restorePlanetScene();
+      }
+      if (activeDiscovery) {
+        activeDiscovery = null;
+        restorePlanetScene();
+      }
+
+      activeDiscovery = discovery;
+      discoveryStartedAt = performance.now();
+      lastAnimationAt = discoveryStartedAt;
+      discoveryTitle.textContent = discovery.name || "새 생명 발견";
+      discoveryDescription.textContent = discovery.description || "";
+      discoveryEffect.textContent = discovery.effect
+        ? `현재 효과 · ${discovery.effect}`
+        : "";
+      discoveryNote.textContent =
+        discovery.renderer === "procedural-cell"
+          ? "과학적 정밀 복원이 아닌 게임용 시각화입니다."
+          : "이 생물의 전용 관찰 장면은 준비 중입니다.";
+      discoveryLayer.style.display = "flex";
+      const mobile = window.matchMedia("(max-width: 600px)").matches;
+      shell.style.height = mobile ? "540px" : "620px";
+      notifyHost(
+        "streamlit:setFrameHeight",
+        { height: mobile ? 540 : 620 },
+      );
+      if (!sceneState) {
+        discoveryNote.textContent += " 3D 로딩에 실패해 단순화된 관찰 화면을 표시합니다.";
+        fallbackDiscoveryTimer = window.setTimeout(
+          () => finishDiscovery("complete"),
+          discoveryDurationMs,
+        );
+        return;
+      }
+
+      const {
+        controls,
+        camera,
+        scene,
+        stars,
+        atmosphere,
+        terrainMesh,
+        water,
+        cellScene,
+      } = sceneState;
+      originalSceneState = {
+        starsVisible: stars.visible,
+        atmosphereVisible: atmosphere.visible,
+        terrainVisible: terrainMesh.visible,
+        waterVisible: water.visible,
+        background: scene.background ? scene.background.clone() : null,
+        cameraPosition: camera.position.clone(),
+        controlTarget: controls.target.clone(),
+      };
+      controls.autoRotate = false;
+      controls.enabled = false;
+      stars.visible = false;
+      atmosphere.visible = false;
+      terrainMesh.visible = false;
+      water.visible = false;
+      scene.background = new sceneState.THREE.Color(0x03131b);
+      cellScene.group.visible = discovery.renderer === "procedural-cell";
+      cellScene.proceduralObjects.forEach((object) => { object.visible = true; });
+      cellScene.particles.visible = true;
+      if (discovery.renderer === "model" && discovery.asset_path) {
+        loadDiscoveryModel(discovery);
+      } else if (discovery.renderer === "image" && discovery.asset_path) {
+        loadDiscoveryImage(discovery);
+      }
+    }
+
+    function disposeObjectResources(object) {
+      object.traverse((child) => {
+        if (child.geometry) child.geometry.dispose();
+        const materials = Array.isArray(child.material)
+          ? child.material
+          : child.material ? [child.material] : [];
+        for (const material of materials) {
+          for (const value of Object.values(material)) {
+            if (value && value.isTexture) value.dispose();
+          }
+          material.dispose();
+        }
+      });
+    }
+
+    function disposeDiscoveryAsset() {
+      if (!sceneState) return;
+      const { cellScene } = sceneState;
+      if (cellScene.mixer) {
+        cellScene.mixer.stopAllAction();
+        if (cellScene.asset) cellScene.mixer.uncacheRoot(cellScene.asset);
+        cellScene.mixer = null;
+      }
+      if (cellScene.asset) {
+        cellScene.group.remove(cellScene.asset);
+        disposeObjectResources(cellScene.asset);
+        cellScene.asset = null;
+      }
+      cellScene.proceduralObjects.forEach((object) => { object.visible = true; });
+    }
+
+    async function loadDiscoveryModel(discovery) {
+      const { cellScene, THREE } = sceneState;
+      const token = discovery.token;
+      try {
+        const { GLTFLoader } = await import(
+          "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js"
+        );
+        const loader = new GLTFLoader();
+        const gltf = await new Promise((resolve, reject) => {
+          loader.load(
+            new URL(discovery.asset_path, window.location.href).href,
+            resolve,
+            undefined,
+            reject,
+          );
+        });
+        if (!activeDiscovery || activeDiscovery.token !== token) {
+          disposeObjectResources(gltf.scene);
+          return;
+        }
+        const model = gltf.scene;
+        const bounds = new THREE.Box3().setFromObject(model);
+        const size = bounds.getSize(new THREE.Vector3());
+        const center = bounds.getCenter(new THREE.Vector3());
+        const longestSide = Math.max(size.x, size.y, size.z) || 1;
+        model.scale.setScalar(1.25 / longestSide);
+        model.position.copy(center).multiplyScalar(-model.scale.x);
+        cellScene.group.add(model);
+        cellScene.asset = model;
+        if (gltf.animations.length) {
+          cellScene.mixer = new THREE.AnimationMixer(model);
+          gltf.animations.forEach((clip) => {
+            cellScene.mixer.clipAction(clip).play();
+          });
+        }
+        cellScene.proceduralObjects.forEach((object) => { object.visible = false; });
+        cellScene.group.visible = true;
+        discoveryNote.textContent = "제공된 GLB 모델을 이용한 관찰 장면입니다.";
+      } catch (error) {
+        if (!activeDiscovery || activeDiscovery.token !== token) return;
+        if (discovery.id === "first_cell") {
+          cellScene.group.visible = true;
+          cellScene.proceduralObjects.forEach((object) => { object.visible = true; });
+          discoveryNote.textContent =
+            "모델을 불러오지 못해 절차적 3D 최초 세포를 표시합니다.";
+        } else {
+          cellScene.group.visible = false;
+          discoveryNote.textContent =
+            "생물 자산을 불러오지 못했습니다. 전용 관찰 장면은 준비 중입니다.";
+        }
+      }
+    }
+
+    async function loadDiscoveryImage(discovery) {
+      const { cellScene, THREE } = sceneState;
+      const token = discovery.token;
+      try {
+        const texture = await new Promise((resolve, reject) => {
+          new THREE.TextureLoader().load(
+            new URL(discovery.asset_path, window.location.href).href,
+            resolve,
+            undefined,
+            reject,
+          );
+        });
+        if (!activeDiscovery || activeDiscovery.token !== token) {
+          texture.dispose();
+          return;
+        }
+        texture.colorSpace = THREE.SRGBColorSpace;
+        const image = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.1, 1.1),
+          new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
+        );
+        cellScene.group.add(image);
+        cellScene.asset = image;
+        cellScene.group.visible = true;
+        cellScene.proceduralObjects.forEach((object) => { object.visible = false; });
+        discoveryNote.textContent =
+          "정지 이미지 기반 관찰 연출입니다. 3D 모델로 변환하지 않았습니다.";
+      } catch (error) {
+        if (!activeDiscovery || activeDiscovery.token !== token) return;
+        if (discovery.id === "first_cell") {
+          cellScene.group.visible = true;
+          cellScene.proceduralObjects.forEach((object) => { object.visible = true; });
+          discoveryNote.textContent =
+            "이미지를 불러오지 못해 절차적 3D 최초 세포를 표시합니다.";
+        } else {
+          cellScene.group.visible = false;
+          discoveryNote.textContent =
+            "생물 자산을 불러오지 못했습니다. 전용 관찰 장면은 준비 중입니다.";
+        }
+      }
+    }
+
+    function updateDiscoveryAnimation(now) {
+      if (!activeDiscovery) return;
+      const elapsed = now - discoveryStartedAt;
+      const animationDelta = Math.min(
+        Math.max((now - lastAnimationAt) / 1000, 0),
+        0.1,
+      );
+      lastAnimationAt = now;
+      const progress = Math.max(0, Math.min(1, elapsed / discoveryDurationMs));
+      discoveryProgressBar.style.width = `${progress * 100}%`;
+      if (!sceneState || !originalSceneState) {
+        if (progress >= 1) finishDiscovery("complete");
+        return;
+      }
+      const { camera, cellScene } = sceneState;
+      if (cellScene.mixer) cellScene.mixer.update(animationDelta);
+      const ease = 1 - Math.pow(1 - Math.min(progress / 0.3, 1), 3);
+      const startPosition = originalSceneState.cameraPosition;
+      const approachPosition = startPosition.clone().multiplyScalar(0.68);
+      camera.position.lerpVectors(startPosition, approachPosition, ease);
+      cellScene.group.rotation.y = Math.sin(elapsed * 0.00016) * 0.18;
+      const pulse = 1 + Math.sin(elapsed * 0.00135) * 0.035;
+      cellScene.group.scale.setScalar(pulse);
+      cellScene.membrane.scale.set(
+        1 + Math.sin(elapsed * 0.00135) * 0.025,
+        1 + Math.sin(elapsed * 0.00135 + 0.7) * 0.031,
+        1 + Math.sin(elapsed * 0.00135 + 1.4) * 0.025,
+      );
+      cellScene.cytoplasm.rotation.y = elapsed * 0.00008;
+      for (const vesicle of cellScene.vesicles) {
+        const angle = vesicle.angle + elapsed * vesicle.speed * 0.001;
+        vesicle.mesh.position.set(
+          Math.cos(angle) * vesicle.radial,
+          vesicle.vertical + Math.sin(elapsed * 0.0005 + vesicle.angle) * 0.025,
+          Math.sin(angle) * vesicle.radial,
+        );
+      }
+      for (let index = 0; index < cellScene.particleVelocity.length; index += 1) {
+        const offset = index * 3;
+        const velocity = cellScene.particleVelocity[index];
+        cellScene.particlePositions[offset] += velocity.x;
+        cellScene.particlePositions[offset + 1] += velocity.y;
+        cellScene.particlePositions[offset + 2] += Math.sin(elapsed * 0.0003 + velocity.phase) * 0.0004;
+        if (cellScene.particlePositions[offset] > 2.3) cellScene.particlePositions[offset] = -2.3;
+        if (cellScene.particlePositions[offset] < -2.3) cellScene.particlePositions[offset] = 2.3;
+        if (cellScene.particlePositions[offset + 1] > 1.7) cellScene.particlePositions[offset + 1] = -1.7;
+        if (cellScene.particlePositions[offset + 1] < -1.7) cellScene.particlePositions[offset + 1] = 1.7;
+      }
+      cellScene.particleGeometry.attributes.position.needsUpdate = true;
+      if (progress >= 1) finishDiscovery("complete");
+    }
+
     async function initialize() {
       try {
         const THREE = await import(
@@ -406,6 +994,9 @@
         scene.add(water);
         const plants = new THREE.Group();
         scene.add(plants);
+        const cellScene = makeCellScene(THREE, mobile);
+        scene.add(cellScene.group);
+        scene.add(cellScene.particles);
 
         const controls = setupControls(THREE, camera, renderer, { OrbitControls });
         let wheelResumeTimer = 0;
@@ -438,13 +1029,17 @@
           terrainMesh,
           water,
           plants,
+          cellScene,
           observer,
           atmosphere,
           stars,
           terrainSeed: initialSeed,
           terrainVersion: initialVersion,
         };
-        if (latestArgs) updateScene(latestArgs);
+        if (latestArgs) {
+          updateScene(latestArgs);
+          syncDiscovery(latestArgs.discovery);
+        }
         let previousTime = 0;
         let frameId = 0;
         const animate = (now) => {
@@ -452,6 +1047,7 @@
           const delta = previousTime ? Math.min((now - previousTime) / 1000, 0.1) : 0;
           previousTime = now;
           controls.update(delta);
+          updateDiscoveryAnimation(now);
           renderer.render(scene, camera);
         };
         frameId = requestAnimationFrame(animate);
@@ -469,10 +1065,24 @@
           atmosphere.material.dispose();
           stars.geometry.dispose();
           stars.material.dispose();
+          cellScene.particleGeometry.dispose();
+          cellScene.particles.material.dispose();
+          if (cellScene.mixer) cellScene.mixer.stopAllAction();
+          cellScene.group.traverse((object) => {
+            if (object.geometry) object.geometry.dispose();
+            if (object.material) {
+              if (Array.isArray(object.material)) {
+                object.material.forEach((material) => material.dispose());
+              } else {
+                object.material.dispose();
+              }
+            }
+          });
           renderer.dispose();
         }, { once: true });
       } catch (error) {
         fallbackView(error?.message || "WebGL 오류");
+        if (latestArgs) syncDiscovery(latestArgs.discovery);
       }
     }
 
@@ -509,7 +1119,11 @@
       latestArgs = message.args;
       if (sceneState) updateScene(latestArgs);
       else if (fallback.style.display === "flex") fallbackView("외부 모듈 또는 WebGL 오류");
+      if (sceneState) syncDiscovery(latestArgs.discovery);
     });
+
+    skipDiscoveryButton.addEventListener("click", () => finishDiscovery("skip"));
+    closeDiscoveryButton.addEventListener("click", () => finishDiscovery("close"));
 
     document.getElementById("reset").addEventListener("click", () => {
       if (!sceneState) return;
